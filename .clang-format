@@ -1,0 +1,66 @@
+# =============================================================
+# .clang-format  —  tractor_firmware
+# Allman brace style for C/C++
+# Read automatically by clangd on every save.
+# =============================================================
+
+BasedOnStyle: LLVM
+
+# ── Allman: every { on its own line ──────────────────────────
+BreakBeforeBraces: Allman
+
+# ── Indentation ───────────────────────────────────────────────
+IndentWidth:              4
+TabWidth:                 4
+UseTab:                   Never
+ContinuationIndentWidth:  4
+
+# ── Line length ───────────────────────────────────────────────
+ColumnLimit: 100
+
+# ── Spacing ───────────────────────────────────────────────────
+SpaceBeforeParens:              ControlStatements
+SpaceInEmptyParentheses:        false
+SpacesInParentheses:            false
+SpacesInSquareBrackets:         false
+SpaceAfterCStyleCast:           false
+SpaceBeforeAssignmentOperators: true
+
+# ── Pointer alignment ─────────────────────────────────────────
+PointerAlignment: Right
+
+# ── Alignment ─────────────────────────────────────────────────
+AlignConsecutiveAssignments:
+    Enabled:           true
+    AcrossEmptyLines:  false
+    AcrossComments:    false
+AlignTrailingComments:
+    Kind:            Always
+    OverEmptyLines:  1
+
+# ── Never collapse to a single line ──────────────────────────
+AllowShortFunctionsOnASingleLine:  None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine:      false
+AllowShortBlocksOnASingleLine:     Never
+AllowShortCaseLabelsOnASingleLine: false
+
+# ── Include sorting ───────────────────────────────────────────
+SortIncludes:    CaseSensitive
+IncludeBlocks:   Regroup
+IncludeCategories:
+    - Regex:    '^"[^/]+'     # paired header first
+      Priority: 1
+    - Regex:    '^"freertos/' # FreeRTOS
+      Priority: 2
+    - Regex:    '^"(esp_|driver/|lwip/|nvs)' # ESP-IDF
+      Priority: 3
+    - Regex:    '^<'          # system headers
+      Priority: 4
+
+# ── Misc ──────────────────────────────────────────────────────
+MaxEmptyLinesToKeep:                    2
+KeepEmptyLinesAtTheStartOfBlocks:       false
+ReflowComments:                         false
+PenaltyReturnTypeOnItsOwnLine:          200
+PenaltyBreakBeforeFirstCallParameter:   100
