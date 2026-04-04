@@ -58,8 +58,7 @@ static char s_connected_ip[16]   = {0};
 /* Draw QR code into the left 52px column */
 static void render_qr_left(qr_which_t which)
 {
-    display_clear_region(0, 0, 52, 56);   /* clear QR area (leave status bar) */
-
+    display_clear_region(0, 0, 70, 70);//only need quiet zone padding on the right side.
     bool     ready = (which == QR_SHOW_WIFI) ? s_qr_wifi_ready : s_qr_url_ready;
     uint8_t *qr    = (which == QR_SHOW_WIFI) ? s_qr_wifi       : s_qr_url;
 
@@ -68,32 +67,24 @@ static void render_qr_left(qr_which_t which)
         return;
     }
     /* QR at x=1, y=3, scale=2: version-1 QR (21 mod) → 42px + 4px quiet = 50px */
-    display_draw_qr(1, 3, 2, qr);
+    display_draw_qr(0, 0, 2, qr);
 }
 
 /* Right panel labels for WIFI QR screen */
 static void render_wifi_labels(void)
 {
-    display_clear_region(53, 0, 75, 56);
-    display_clear_region(52, 0, 1, 55);   /* clear divider column */
-    display_draw_vline(52, 0, 55);          /* draw divider             */
-    display_draw_text(55,  0, "Scan QR",   DISP_FONT_NORMAL);
-    display_draw_text(55, 11, "to join",   DISP_FONT_NORMAL);
-    display_draw_text(55, 22, "setup AP",  DISP_FONT_NORMAL);
-    display_draw_text(55, 38, "or wait",   DISP_FONT_SMALL);
-    display_draw_text(55, 46, "for URL QR",DISP_FONT_SMALL);
+    display_clear_region(70, 0, 75, 66);
+    //display_clear_region(70, 0, 1, 66);   /* clear divider column */
+    display_draw_text(70,  0, "Scan Me",   DISP_FONT_NORMAL);
+    display_draw_text(70, 11, "to setup",   DISP_FONT_NORMAL);
 }
 
 /* Right panel labels for URL QR screen */
 static void render_url_labels(void)
 {
-    display_clear_region(53, 0, 75, 56);
-    display_draw_vline(52, 0, 55);
-    display_draw_text(55,  0, "On AP?",    DISP_FONT_NORMAL);
-    display_draw_text(55, 11, "Scan for",  DISP_FONT_NORMAL);
-    display_draw_text(55, 22, "setup pg",  DISP_FONT_NORMAL);
-    display_draw_text(55, 38, "or type:",  DISP_FONT_SMALL);
-    display_draw_text(55, 46, "4.1",       DISP_FONT_SMALL);
+    display_clear_region(70, 0, 75, 56);
+    display_draw_text(70,  0, "Scan Me",   DISP_FONT_NORMAL);
+    display_draw_text(70, 11, "to join",   DISP_FONT_NORMAL);
 }
 
 /* Status bar — y=56..63, separated by a rule at y=55.
@@ -131,9 +122,9 @@ static void show_ap_qr_screen(qr_which_t which)
     if (which == QR_SHOW_WIFI) render_wifi_labels();
     else                        render_url_labels();
     /* Status bar */
-    display_clear_region(0, 55, 128, 9);
-    display_draw_hline(0, 55, 128);
-    display_draw_text(2, 57, "Waiting for phone...", DISP_FONT_SMALL);
+    //display_clear_region(0, 55, 128, 9);
+    //display_draw_hline(0, 55, 128);
+    //display_draw_text(2, 57, "Waiting for phone...", DISP_FONT_SMALL);
     display_flush();
 }
 
@@ -215,18 +206,19 @@ void prov_ui_on_state_change(wifi_prov_state_t state, void *ctx)
         s_qr_current    = QR_SHOW_WIFI;
         s_cycling_active = true;
         s_last_switch    = xTaskGetTickCount();
-        show_ap_qr_screen(QR_SHOW_WIFI);
+        show_ap_qr_screen(s_qr_current);
         break;
 
     case WIFI_PROV_STATE_CLIENT_CONNECTED:
         s_cycling_active = false;
-        show_client_connected_screen();
+        s_qr_current = QR_SHOW_URL;
+        show_ap_qr_screen(s_qr_current);
+        //no need for status bar to be displayed because the QR and text already change
         break;
 
     case WIFI_PROV_STATE_CLIENT_GONE:
         s_cycling_active = true;
         s_last_switch    = xTaskGetTickCount();
-        set_status_bar("Waiting for phone...");
         break;
 
     case WIFI_PROV_STATE_CREDS_RECEIVED:
@@ -277,14 +269,14 @@ void prov_ui_tick(void)
 
     if (elapsed < QR_CYCLE_MS) return;
 
-    s_qr_current = (s_qr_current == QR_SHOW_WIFI) ? QR_SHOW_URL : QR_SHOW_WIFI;
+    //s_qr_current = (s_qr_current == QR_SHOW_WIFI) ? QR_SHOW_URL : QR_SHOW_WIFI;
     s_last_switch = now;
 
     ESP_LOGD(TAG, "QR cycle → %s", s_qr_current == QR_SHOW_WIFI ? "WIFI" : "URL");
 
-    render_qr_left(s_qr_current);
-    if (s_qr_current == QR_SHOW_WIFI) render_wifi_labels();
-    else                               render_url_labels();
-    /* Status bar content unchanged — dirty flag is set by the draw calls above */
-    display_flush();
+    //render_qr_left(s_qr_current);
+    //if (s_qr_current == QR_SHOW_WIFI) render_wifi_labels();
+    //else                               render_url_labels();
+    /*Status bar content unchanged — dirty flag is set by the draw calls above */
+    //display_flush();
 }

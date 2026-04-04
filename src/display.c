@@ -188,7 +188,7 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
         return;
     }
 
-    int quiet = scale * 2;  /* 2-module quiet zone per spec */
+    int quiet = (scale == 3) ? 0 : (scale * 2);
     int total = size * scale + quiet * 2;
 
     /* White (background) quiet zone */

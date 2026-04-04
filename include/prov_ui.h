@@ -19,7 +19,7 @@
 #include "wifi_prov.h"
 
 /* Milliseconds between QR code switches when cycling */
-#define QR_CYCLE_MS 5000
+#define QR_CYCLE_MS 1000
 
 /**
  * Initialise the provisioning UI.
