@@ -143,7 +143,7 @@ static void show_connecting_screen(const char *ssid)
     display_draw_text(0,  0, "Connecting to:",  DISP_FONT_NORMAL);
     display_draw_hline(0, 12, 128);
     char trunc[22];
-    snprintf(trunc, sizeof(trunc), "%s", ssid[0] ? ssid : "...");
+    snprintf(trunc, sizeof(trunc), "%.21s", ssid[0] ? ssid : "...");
     display_draw_text(0, 15, trunc, DISP_FONT_MEDIUM);
     display_draw_text(0, 36, "Please wait...", DISP_FONT_NORMAL);
     display_flush();
@@ -156,7 +156,7 @@ static void show_success_screen(const char *ssid, const char *ip)
     display_draw_hline(0, 13, 128);
     display_draw_text( 0, 16, "Connected to:", DISP_FONT_NORMAL);
     char trunc[22];
-    snprintf(trunc, sizeof(trunc), "%s", ssid);
+    snprintf(trunc, sizeof(trunc), "%.21s", ssid);
     display_draw_text( 0, 27, trunc,          DISP_FONT_MEDIUM);
     display_draw_hline(0, 42, 128);
     display_draw_text( 0, 45, "IP address:",  DISP_FONT_NORMAL);

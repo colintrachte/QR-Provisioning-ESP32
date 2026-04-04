@@ -42,6 +42,9 @@ static void set_gpio_out(int pin, int level)
     gpio_set_level(pin, level);
 }
 
+#include "display.h"
+#include "u8g2.h"
+
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
 
 void display_init(void)

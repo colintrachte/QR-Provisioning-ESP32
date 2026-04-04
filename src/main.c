@@ -82,8 +82,8 @@ void app_main(void)
         }
         wifi_prov_erase_credentials();
         display_clear();
-        display_draw_text(4, 24, "Credentials erased.", FONT_6X8);
-        display_draw_text(4, 36, "Restarting...",       FONT_6X8);
+        display_draw_text(4, 24, "Credentials erased.", u8g2_font_6x10_tf);
+        display_draw_text(4, 36, "Restarting...",       u8g2_font_6x10_tf);
         display_flush();
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
@@ -101,8 +101,8 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "wifi_prov_start failed: %s", esp_err_to_name(ret));
         display_clear();
-        display_draw_text(4, 20, "Prov start failed!", FONT_6X8);
-        display_draw_text(4, 32, esp_err_to_name(ret), FONT_6X8);
+        display_draw_text(4, 20, "Prov start failed!", u8g2_font_6x10_tf);
+        display_draw_text(4, 32, esp_err_to_name(ret), u8g2_font_6x10_tf);
         display_flush();
         /* Halt — reboot in 10s */
         vTaskDelay(pdMS_TO_TICKS(10000));

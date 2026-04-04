@@ -16,7 +16,7 @@ if(COMMAND register_component)
     register_component()
 else()
     add_library(u8g2 ${COMPONENT_SRCS})
-    target_include_directories(u8g2 PUBLIC 
+    target_include_directories(u8g2 PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/csrc>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/cppsrc>"
     "$<INSTALL_INTERFACE:include>")

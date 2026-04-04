@@ -43,6 +43,13 @@
 #define DISP_FONT_MEDIUM  u8g2_font_7x13_tf
 #define DISP_FONT_BOLD    u8g2_font_8x13B_tf
 
+typedef enum
+{
+    FONT_6X8,
+    FONT_8X13,
+    FONT_10X20
+} display_font_t;
+
 /* Lifecycle */
 void display_init(void);
 void display_power(bool on);
@@ -59,7 +66,7 @@ bool display_is_dirty(void);
 /* Drawing wrappers - all mark dirty, none flush */
 void display_clear(void);
 void display_clear_region(int x, int y, int w, int h);
-int  display_draw_text(int x, int y, const char *str, const uint8_t *font);
+int display_draw_text(int x, int y, const char *str, const uint8_t *font);
 void display_fill_rect(int x, int y, int w, int h, bool on);
 void display_draw_rect(int x, int y, int w, int h);
 void display_draw_hline(int x, int y, int len);
