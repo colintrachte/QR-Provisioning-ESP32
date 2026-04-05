@@ -1,45 +1,53 @@
 /**
- * main.c — Robot Provisioning entry point
+ * main.c — Application entry point.
  *
- * Startup sequence:
- *   1. display_init()          — power OLED, send init commands
- *   2. prov_ui_show_boot()     — render boot screen, flush once
- *   3. prov_ui_init()          — pre-generate both QR codes
- *   4. wifi_prov_start()       — attempt stored creds or start portal
- *   5. main loop — calls prov_ui_tick() which handles QR cycling
+ * Startup sequence
+ * ────────────────
+ *  1. display_init()           Power OLED, send init commands.
+ *  2. prov_ui_show_boot()      Render boot splash (so the screen isn't blank
+ *                              during the QR generation step below).
+ *  3. prov_ui_init()           Pre-generate WiFi + URL QR codes (~50 ms,
+ *                              CPU-bound; done before WiFi init on purpose).
+ *  4. wifi_manager_start()     Try stored credentials; fall back to portal.
+ *                              NVS init is handled internally.
+ *  5. Main loop                Calls prov_ui_tick() to drive QR cycling.
+ *                              Once connected, add your application logic here.
  *
- * After provisioning succeeds, the success screen stays up indefinitely
- * and the main loop can be extended with robot application code.
+ * Re-provision button
+ * ───────────────────
+ *  Hold GPIO0 (USER_SW / BOOT button on Heltec V3) for 3 s on power-up to
+ *  erase stored credentials and force the portal to open.
  */
 
 #include "display.h"
 #include "qr_gen.h"
-#include "wifi_prov.h"
+#include "wifi_manager.h"
 #include "prov_ui.h"
 
 #include "esp_log.h"
-#include "nvs_flash.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "main";
 
-/* ── AP credentials — change these for your device ─────────────────────*/
+/* ── SoftAP credentials ─────────────────────────────────────────────────
+ * Change these for your device.  Password must be ≥8 chars or set to ""
+ * for an open (unencrypted) network.
+ */
 #define AP_SSID     "RobotSetup"
-#define AP_PASSWORD "robot1234"   /* min 8 chars; set to "" for open AP  */
+#define AP_PASSWORD "robot1234"
 
-/* ── Re-provision trigger ───────────────────────────────────────────────*/
-/* GPIO0 is the USER_SW button on Heltec V3.
-   Hold on boot to force re-provisioning regardless of saved credentials. */
-#define REPROV_BUTTON_GPIO  0
-#define REPROV_HOLD_MS      3000
+/* ── Re-provision button ────────────────────────────────────────────────
+ * GPIO0 = BOOT/USER_SW on Heltec V3.  Active-low (pulled up internally).
+ */
+#define REPROV_GPIO     0
+#define REPROV_HOLD_MS  3000
 
-#include "driver/gpio.h"
-
-static bool check_reprovision_button(void)
+static bool reprovision_requested(void)
 {
     gpio_config_t io = {
-        .pin_bit_mask = 1ULL << REPROV_BUTTON_GPIO,
+        .pin_bit_mask = 1ULL << REPROV_GPIO,
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -47,83 +55,74 @@ static bool check_reprovision_button(void)
     };
     gpio_config(&io);
 
-    if (gpio_get_level(REPROV_BUTTON_GPIO) != 0) return false;
+    if (gpio_get_level(REPROV_GPIO) != 0) return false;  /* button not held */
 
-    /* Button is held — wait to confirm it stays held */
-    ESP_LOGI(TAG, "Button held — hold for %dms to re-provision", REPROV_HOLD_MS);
+    ESP_LOGI(TAG, "BOOT held — keep holding %d ms to re-provision", REPROV_HOLD_MS);
     vTaskDelay(pdMS_TO_TICKS(REPROV_HOLD_MS));
-    return (gpio_get_level(REPROV_BUTTON_GPIO) == 0);
+    return (gpio_get_level(REPROV_GPIO) == 0);  /* still held → confirmed */
 }
 
 /* ── Application entry point ────────────────────────────────────────────*/
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Robot Provisioning Firmware ===");
+    ESP_LOGI(TAG, "=== WiFi Manager Demo ===");
     ESP_LOGI(TAG, "Board: Heltec WiFi LoRa 32 V3 (ESP32-S3)");
 
-    /* ── 1. Display init — must be first so we can show status ── */
+    /* 1. Display must come up first so every subsequent step can show status. */
     display_init();
 
-    /* ── 2. Boot splash ── */
+    /* 2. Boot splash — gives immediate visual feedback while QRs are generated. */
     prov_ui_show_boot();
 
-    /* ── 3. Pre-generate QR codes (CPU-intensive, ~50ms, do before WiFi init) ── */
+    /* 3. QR generation (CPU-bound) — do before WiFi init to keep startup clean. */
     prov_ui_init(AP_SSID, AP_PASSWORD);
 
-    /* ── 4. Check re-provision button ── */
-    if (check_reprovision_button()) {
-        ESP_LOGW(TAG, "Re-provision button held — erasing credentials");
-        /* NVS must be init'd before we can erase */
-        esp_err_t ret = nvs_flash_init();
-        if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            nvs_flash_erase();
-            nvs_flash_init();
-        }
-        wifi_prov_erase_credentials();
+    /* 4. Re-provision check — erase NVS credentials if button held. */
+    if (reprovision_requested()) {
+        ESP_LOGW(TAG, "Re-provision confirmed — erasing credentials");
+        /* wifi_manager_erase_credentials() handles its own NVS init. */
+        wifi_manager_erase_credentials();
         display_clear();
-        display_draw_text(4, 24, "Credentials erased.", u8g2_font_6x10_tf);
-        display_draw_text(4, 36, "Restarting...",       u8g2_font_6x10_tf);
+        display_draw_text(4, 24, "Credentials erased.", DISP_FONT_NORMAL);
+        display_draw_text(4, 36, "Restarting...",       DISP_FONT_NORMAL);
         display_flush();
         vTaskDelay(pdMS_TO_TICKS(1500));
     }
 
-    /* ── 5. Start WiFi provisioning ── */
-    wifi_prov_config_t prov_cfg = WIFI_PROV_CONFIG_DEFAULT();
-    prov_cfg.ap_ssid         = AP_SSID;
-    prov_cfg.ap_password     = AP_PASSWORD;
-    prov_cfg.sta_max_retries = 5;
-    prov_cfg.on_state_change = prov_ui_on_state_change;
-    prov_cfg.on_connected    = prov_ui_on_connected;
-    prov_cfg.cb_ctx          = NULL;
+    /* 5. Start WiFi manager. NVS init is done inside wifi_manager_start(). */
+    wifi_manager_config_t cfg = WIFI_MANAGER_CONFIG_DEFAULT();
+    cfg.ap_ssid         = AP_SSID;
+    cfg.ap_password     = AP_PASSWORD;
+    cfg.sta_max_retries = 5;
+    cfg.on_state_change = prov_ui_on_state_change;
+    cfg.on_connected    = prov_ui_on_connected;
 
-    esp_err_t ret = wifi_prov_start(&prov_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "wifi_prov_start failed: %s", esp_err_to_name(ret));
+    esp_err_t err = wifi_manager_start(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi_manager_start failed: %s", esp_err_to_name(err));
         display_clear();
-        display_draw_text(4, 20, "Prov start failed!", u8g2_font_6x10_tf);
-        display_draw_text(4, 32, esp_err_to_name(ret), u8g2_font_6x10_tf);
+        display_draw_text(4, 20, "WiFi init failed!", DISP_FONT_NORMAL);
+        display_draw_text(4, 32, esp_err_to_name(err), DISP_FONT_SMALL);
         display_flush();
-        /* Halt — reboot in 10s */
         vTaskDelay(pdMS_TO_TICKS(10000));
         esp_restart();
     }
 
-    /* ── 6. Main loop ── */
+    /* 6. Main loop — prov_ui_tick() drives the QR cycling animation. */
     ESP_LOGI(TAG, "Entering main loop");
     while (1) {
-        /* Drive QR cycling — only redraws when timer fires, otherwise returns
-           immediately.  No periodic display refresh happens anywhere else. */
-        prov_ui_tick();
+        prov_ui_tick();  /* non-blocking; only redraws when cycling timer fires */
 
-        /* Once connected, application code goes here.
-           Example: read sensors, run robot logic, etc.
-           The display shows the success screen until you call display_* again. */
-        if (wifi_prov_is_connected()) {
-            /* Robot application placeholder */
-            /* robot_app_tick(); */
+        if (wifi_manager_is_connected()) {
+            /* ── Your application code goes here ──────────────────────
+             * The success screen persists until you call display_clear().
+             * Example:
+             *   sensor_read_and_publish();
+             *   robot_drive_tick();
+             */
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));  /* 10Hz tick rate — adequate for QR cycling */
+        vTaskDelay(pdMS_TO_TICKS(100));  /* 10 Hz — adequate for QR cycling */
     }
 }

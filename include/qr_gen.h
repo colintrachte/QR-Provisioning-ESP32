@@ -1,48 +1,56 @@
 #pragma once
 /**
- * qr_gen.h — Thin wrappers around nayuki qrcodegen for provisioning use.
+ * qr_gen.h — QR code generation helpers for WiFi provisioning.
  *
- * Two QR types are used during provisioning:
+ * Thin wrappers around the nayuki qrcodegen library for the two QR types
+ * used during provisioning:
  *
- *  AP_WIFI  — WIFI URI scheme.  Phone camera recognises it and offers to join
- *              the ESP32's SoftAP without the user typing the SSID/password.
- *              Format: WIFI:S:<ssid>;T:WPA;P:<password>;;
+ *   WiFi join QR  — WIFI: URI scheme.  Phone cameras recognise it and offer
+ *                   to join the SoftAP without the user typing credentials.
+ *                   Format: WIFI:S:<ssid>;T:WPA;P:<password>;;
+ *                           WIFI:S:<ssid>;T:nopass;;  (open network)
  *
- *  PORTAL   — Plain URL pointing at the captive portal.  Fallback for phones
- *              where the captive-portal redirect did not fire automatically.
- *              Format: http://192.168.4.1
+ *   Portal URL QR — Plain URL pointing at the captive portal.  Fallback for
+ *                   phones where the OS captive-portal redirect did not fire.
+ *                   Format: http://192.168.4.1
  *
- * Buffers are static — callers must not free them.
- * Thread safety: these functions are not re-entrant; call from one task only.
+ * Thread safety: these functions share a static temporary buffer and are NOT
+ * re-entrant.  Call them from a single task (typically before WiFi starts).
  */
 
 #include <stdint.h>
 #include <stdbool.h>
 
-#define QR_BUF_LEN 3918   /* qrcodegen_BUFFER_LEN_MAX */
+/** Size of each QR output buffer — qrcodegen_BUFFER_LEN_MAX for v40 QR. */
+#define QR_BUF_LEN 3918
 
 /**
- * Build the WIFI: URI and encode it as a QR code.
+ * Encode a WiFi join URI as a QR code.
  *
- * @param ssid      AP SSID (max 32 chars)
- * @param password  AP password (8-63 chars for WPA2; empty string = open)
- * @param out_buf   Caller-supplied buffer of at least QR_BUF_LEN bytes
- * @return true on success, false if the data was too long or encoding failed
+ * @param ssid      SoftAP SSID (max 32 chars).
+ * @param password  Password (8–63 chars for WPA2; NULL or "" = open network).
+ * @param out_buf   Caller-supplied buffer of at least QR_BUF_LEN bytes.
+ * @return true on success; false if the URI was too long or encoding failed.
  */
 bool qr_gen_wifi(const char *ssid, const char *password, uint8_t *out_buf);
 
 /**
- * Encode a URL as a QR code (used for the portal fallback http://x.x.x.x).
+ * Encode a URL as a QR code.
  *
- * @param url      Null-terminated URL string
- * @param out_buf  Caller-supplied buffer of at least QR_BUF_LEN bytes
- * @return true on success
+ * @param url      Null-terminated URL (e.g. "http://192.168.4.1").
+ * @param out_buf  Caller-supplied buffer of at least QR_BUF_LEN bytes.
+ * @return true on success.
  */
 bool qr_gen_url(const char *url, uint8_t *out_buf);
 
 /**
- * Return the pixel dimensions (width == height) that display_draw_qr will
- * occupy for the given qrcode buffer at the given scale, including quiet zone.
+ * Calculate the pixel dimensions of a rendered QR code.
+ *
+ * Returns the width (== height) in pixels that display_draw_qr() will
+ * occupy for the given scale, including the quiet zone.
  * Returns 0 if qrcode is invalid.
+ *
+ * @param qrcode  Buffer produced by qr_gen_wifi() or qr_gen_url().
+ * @param scale   Pixels per module (pass the same value as display_draw_qr).
  */
 int qr_pixel_size(const uint8_t *qrcode, int scale);

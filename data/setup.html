@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RC Tank Setup</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f1117;
+      color: #e4e6f0;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 380px;
+      background: #1c1f2b;
+      border: 1px solid #2e3347;
+      border-radius: 14px;
+      padding: 32px 28px;
+    }
+
+    .logo { font-size: 2rem; text-align: center; margin-bottom: 6px; }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      text-align: center;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      font-size: 0.78rem;
+      color: #4a4f6a;
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    /* ── Network list ── */
+    .section-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #4a4f6a;
+      margin-bottom: 8px;
+    }
+
+    #network-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 20px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
+    .network-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: #0f1117;
+      border: 1px solid #2e3347;
+      border-radius: 8px;
+      color: #e4e6f0;
+      font-size: 0.9rem;
+      font-family: inherit;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s;
+      width: 100%;
+    }
+
+    .network-btn:hover   { border-color: #3b82f6; background: #13172a; }
+    .network-btn.selected { border-color: #3b82f6; background: #13172a; }
+
+    .network-name { font-weight: 500; }
+
+    .network-meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .signal {
+      font-size: 0.8rem;
+      color: #4a4f6a;
+    }
+
+    .lock {
+      font-size: 0.75rem;
+      color: #4a4f6a;
+    }
+
+    .scan-status {
+      font-size: 0.78rem;
+      color: #4a4f6a;
+      text-align: center;
+      padding: 12px 0;
+    }
+
+    .rescan-btn {
+      background: none;
+      border: 1px solid #2e3347;
+      border-radius: 6px;
+      color: #4a4f6a;
+      font-size: 0.72rem;
+      font-family: inherit;
+      padding: 4px 10px;
+      cursor: pointer;
+      margin-left: 8px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .rescan-btn:hover { border-color: #3b82f6; color: #e4e6f0; }
+
+    /* ── Form ── */
+    label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #4a4f6a;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      background: #0f1117;
+      border: 1px solid #2e3347;
+      border-radius: 8px;
+      color: #e4e6f0;
+      font-size: 1rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+      margin-bottom: 16px;
+    }
+
+    input:focus { border-color: #3b82f6; }
+
+    .pass-wrap { position: relative; margin-bottom: 24px; }
+    .pass-wrap input { margin-bottom: 0; padding-right: 44px; }
+
+    .toggle-pass {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: #4a4f6a;
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 4px;
+      line-height: 1;
+    }
+
+    .toggle-pass:hover { color: #e4e6f0; }
+
+    button[type="submit"] {
+      width: 100%;
+      padding: 12px;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    button[type="submit"]:hover    { background: #2563eb; }
+    button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
+
+    .status {
+      margin-top: 14px;
+      font-size: 0.8rem;
+      text-align: center;
+      color: #4a4f6a;
+      min-height: 1.2em;
+    }
+
+    .status.error { color: #ef4444; }
+
+    .hint {
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid #2e3347;
+      font-size: 0.72rem;
+      color: #4a4f6a;
+      text-align: center;
+      line-height: 1.7;
+    }
+
+    .hint strong { color: #e4e6f0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🪖</div>
+    <h1>RC Tank Setup</h1>
+    <p class="subtitle">Select your WiFi network</p>
+
+    <p class="section-label">
+      Available networks
+      <button class="rescan-btn" id="rescan-btn" onclick="startScan()">↺ Rescan</button>
+    </p>
+    <div id="network-list">
+      <p class="scan-status" id="scan-status">Scanning…</p>
+    </div>
+
+    <form id="setup-form" action="/save" method="POST">
+      <label for="ssid">Network name</label>
+      <input type="text" id="ssid" name="ssid"
+             placeholder="Or type manually"
+             autocomplete="off" autocorrect="off"
+             autocapitalize="none" spellcheck="false"
+             required>
+
+      <label for="pass">Password</label>
+      <div class="pass-wrap">
+        <input type="password" id="pass" name="pass"
+               placeholder="Leave blank if open network"
+               autocomplete="current-password">
+        <button type="button" class="toggle-pass" aria-label="Show/hide password">👁</button>
+      </div>
+
+      <button type="submit" id="submit-btn">Save &amp; Connect</button>
+      <p class="status" id="status"></p>
+    </form>
+
+    <p class="hint">
+      After saving, reconnect to your normal WiFi and visit<br>
+      <strong>http://rc-tank.local</strong><br><br>
+      To reconfigure: hold FLASH button 3 s on power-up.
+    </p>
+  </div>
+
+<script>
+    const ssidInput  = document.getElementById('ssid');
+    const pasInput   = document.getElementById('pass');
+    const listEl     = document.getElementById('network-list');
+    const statusEl   = document.getElementById('scan-status');
+
+    function signalBars(quality)
+    {
+      if (quality > 80) return '▂▄▆█';
+      if (quality > 60) return '▂▄▆·';
+      if (quality > 40) return '▂▄··';
+      return '▂···';
+    }
+
+    function renderNetworks(networks)
+    {
+      listEl.innerHTML = '';
+
+      if (!networks || networks.length === 0)
+      {
+        listEl.innerHTML = '<p class="scan-status">No networks found. <button class="rescan-btn" onclick="startScan()">Rescan</button></p>';
+        return;
+      }
+
+      networks.sort((a, b) => b.rssi - a.rssi);
+
+      networks.forEach(net =>
+      {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'network-btn';
+        btn.innerHTML =
+          `<span class="network-name">${escHtml(net.ssid)}</span>` +
+          `<span class="network-meta">` +
+          `<span class="signal">${signalBars(net.quality)} ${net.quality}%</span>` +
+          (net.secure ? `<span class="lock">🔒</span>` : '') +
+          `</span>`;
+
+        btn.addEventListener('click', () =>
+        {
+          listEl.querySelectorAll('.network-btn').forEach(b => b.classList.remove('selected'));
+          btn.classList.add('selected');
+          ssidInput.value = net.ssid;
+          if (net.secure) pasInput.focus();
+          else pasInput.value = '';
+        });
+
+        listEl.appendChild(btn);
+      });
+    }
+
+    function escHtml(s)
+    {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    let scanPoll = null;
+
+    function startScan()
+    {
+      listEl.innerHTML = '<p class="scan-status">Scanning…</p>';
+      clearInterval(scanPoll);
+
+      scanPoll = setInterval(() =>
+      {
+        fetch('/scan')
+          .then(r => r.ok ? r.json() : Promise.reject())
+          .then(data =>
+          {
+            if (data.status === 'scanning') return;
+            if (Array.isArray(data))
+            {
+              renderNetworks(data);
+              clearInterval(scanPoll);
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+    }
+
+    document.querySelector('.toggle-pass').addEventListener('click', () =>
+    {
+      pasInput.type = pasInput.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('setup-form').addEventListener('submit', e =>
+    {
+      e.preventDefault();
+      const ssid = ssidInput.value.trim();
+      if (!ssid) return;
+
+      const formData = new URLSearchParams(new FormData(e.target));
+      const statusMsg = document.getElementById('status');
+      const btn = document.getElementById('submit-btn');
+
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      statusMsg.textContent = 'Sending credentials to tank...';
+
+      fetch('/save', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data =>
+        {
+          statusMsg.textContent = 'Saved. Testing connection...';
+          setTimeout(pollConnectStatus, 1500);
+        })
+        .catch(err =>
+        {
+          statusMsg.textContent = 'Error saving credentials.';
+          btn.disabled = false;
+        });
+    });
+
+    function pollConnectStatus()
+    {
+      fetch('/connect-status')
+        .then(r => r.json())
+        .then(data =>
+        {
+          const statusMsg = document.getElementById('status');
+          const btn = document.getElementById('submit-btn');
+
+          if (data.status === 'connecting')
+          {
+            statusMsg.textContent = 'Tank is authenticating...';
+            setTimeout(pollConnectStatus, 2000);
+          }
+          else if (data.status === 'success')
+          {
+            statusMsg.style.color = '#4ade80';
+            statusMsg.innerHTML = `Connected!<br>IP: <strong>${data.ip}</strong><br>Switching to control mode...`;
+            setTimeout(() => {
+                window.location.href = `http://rc-tank.local`;
+            }, 3000);
+          }
+          else if (data.status === 'failed')
+          {
+            statusMsg.textContent = 'Connection failed. Check password and range.';
+            statusMsg.classList.add('error');
+            btn.disabled = false;
+            btn.textContent = 'Try Again';
+          }
+        })
+        .catch(() => {
+            // If the request fails, the tank might have switched modes and dropped the AP.
+            // This is often a sign of success.
+            document.getElementById('status').textContent = "Tank moved to Network. Redirecting...";
+                  setTimeout(() => {
+                    window.location.href = "http://rc-tank.local";
+                  }, 5000);
+        });
+    }
+
+    startScan();
+  </script>
+</body>
+</html>
