@@ -1,44 +1,35 @@
 /**
- * wifi_manager.c — SoftAP captive-portal WiFi provisioning for ESP-IDF.
+ * wifi_manager.c -- SoftAP captive-portal WiFi provisioning for ESP-IDF.
  *
  * See wifi_manager.h for the public API and behaviour overview.
  *
  * Internal architecture
- * ─────────────────────
- *  dns_task          UDP/53 server — answers every A-record query with the
+ * ---------------------
+ *  dns_task          UDP/53 server -- answers every A-record query with the
  *                    AP gateway IP, hijacking all DNS so that every hostname
  *                    the connecting device probes resolves to us.
  *
  *  event_task        Dequeues internal prov_event_t messages produced by
  *                    the WiFi event handler and fires the user's callbacks.
  *                    Runs on its own task so callbacks never execute from
- *                    the WiFi/lwIP context — display_* calls are safe.
+ *                    the WiFi/lwIP context -- display_* calls are safe.
  *
  *  wifi_event_cb     Registered for WIFI_EVENT (any) and IP_EVENT_STA_GOT_IP.
  *                    Translates ESP-IDF events into prov_event_t and enqueues
  *                    them.  Never calls user code directly.
  *
  *  HTTP handlers     Served by esp_http_server.  Each OS that probes for
- *                    internet connectivity gets a dedicated handler — see the
+ *                    internet connectivity gets a dedicated handler -- see the
  *                    table in wifi_manager.h and the handler comments below.
  *
  * Scan flow
- * ─────────
- *  Calling esp_wifi_scan_start(block=true) from inside an httpd handler task
- *  deadlocks the socket layer — the response never arrives.  Instead we use
- *  a non-blocking scan with a simple three-state machine:
- *
- *    SCAN_IDLE     → GET /scan received → start non-blocking scan → SCAN_RUNNING
- *                    → return {"status":"scanning"} immediately
- *    SCAN_RUNNING  → GET /scan received → return {"status":"scanning"}
- *    SCAN_DONE     → set by WIFI_EVENT_SCAN_DONE handler
- *                  → GET /scan received → read results, return JSON array → SCAN_IDLE
- *
- *  The browser JS polls /scan every 1.5 s until it gets an array.
- *
- * Important: esp_wifi_scan_start() fails with ESP_ERR_WIFI_STATE if the STA
- * interface is still in CONNECTING state.  We always call esp_wifi_disconnect()
- * before starting the portal so the STA is idle when scans are requested.
+ * -----------
+ *  Scanning runs on a dedicated scan_task, not from the httpd handler.
+ *  Calling esp_wifi_scan_start(block=true) from an httpd handler starves
+ *  the TCP stack -- the HTTP response never arrives.  scan_task blocks
+ *  itself while the radio scans, stores results in a mutex-protected cache,
+ *  and re-scans every SCAN_INTERVAL_MS.  handle_scan() only reads that
+ *  cache -- it never touches the WiFi driver.
  */
 
 #include "wifi_manager.h"
@@ -63,36 +54,48 @@
 
 static const char *TAG = "wifi_mgr";
 
-/* ── NVS namespace / keys ───────────────────────────────────────────────*/
+/* -- NVS namespace / keys -----------------------------------------------*/
 #define NVS_NAMESPACE  "wifi_mgr"
 #define NVS_KEY_SSID   "ssid"
 #define NVS_KEY_PASS   "pass"
 
-/* ── Event-group bits used to synchronise the initial credential check ─*/
+/* -- Event-group bits used to synchronise the initial credential check -*/
 #define EVT_STA_CONNECTED BIT0
 #define EVT_STA_FAILED    BIT1
 
-/* ── DNS ────────────────────────────────────────────────────────────────*/
+/* -- DNS ----------------------------------------------------------------*/
 #define DNS_PORT 53
 
-/* ── AP gateway (must match the netif IP assigned to the AP interface) ─*/
+/* -- AP gateway (must match the netif IP assigned to the AP interface) -*/
 #define AP_GW_IP  WIFI_MANAGER_AP_IP  /* "192.168.4.1" */
 
-/* ── Internal event passed through the callback queue ──────────────────*/
+/* -- Internal event passed through the callback queue ------------------*/
 typedef struct {
     wifi_manager_state_t state;
     char ssid[33];
     char ip[16];
 } mgr_event_t;
 
-/* ── Scan state machine ─────────────────────────────────────────────────
- * volatile because it is written from the WiFi event handler (different
- * execution context to the HTTP handler that reads it).
+/* -- Scan result cache --------------------------------------------------
+ * Populated by scan_task, read by handle_scan.
+ * Protected by s_scan_mutex so the HTTP handler never sees a half-written
+ * buffer.  s_scan_ready flips to true after the first scan completes.
  */
-typedef enum { SCAN_IDLE = 0, SCAN_RUNNING, SCAN_DONE } scan_state_t;
-static volatile scan_state_t s_scan_state = SCAN_IDLE;
+#define SCAN_MAX_APS  20
 
-/* ── Module-level state ─────────────────────────────────────────────────*/
+typedef struct {
+    char ssid[33];
+    int  quality;   /* 0-100 mapped from RSSI */
+    bool secure;
+} ap_info_t;
+
+static SemaphoreHandle_t s_scan_mutex  = NULL;
+static ap_info_t         s_scan_aps[SCAN_MAX_APS];
+static int               s_scan_count  = 0;
+static bool              s_scan_ready  = false;
+static TaskHandle_t      s_scan_task   = NULL;
+
+/* -- Module-level state -------------------------------------------------*/
 static wifi_manager_config_t s_cfg;
 static httpd_handle_t        s_httpd        = NULL;
 static EventGroupHandle_t    s_sta_evt_grp  = NULL;
@@ -106,12 +109,104 @@ static int                   s_retry_count  = 0;
 static char                  s_sta_ssid[33] = {0};  /* SSID we are trying to join */
 static char                  s_sta_pass[64] = {0};  /* password for above         */
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
+ *  SCAN TASK
+ *
+ *  Runs a blocking WiFi scan every SCAN_INTERVAL_MS on its own FreeRTOS
+ *  task, then stores results in the shared cache (s_scan_aps / s_scan_count).
+ *
+ *  Why a dedicated task?
+ *    esp_wifi_scan_start(block=true) is safe to call from a FreeRTOS task
+ *    but NOT from the httpd handler task -- blocking there starves the TCP
+ *    stack and the HTTP response never arrives.  A dedicated task has no
+ *    such constraint; it just blocks itself while the radio scans.
+ *
+ *  Why not the WIFI_EVENT_SCAN_DONE event approach?
+ *    It requires a volatile state machine shared between the WiFi event
+ *    handler and the HTTP handler, across two different execution contexts,
+ *    with an inherent race: the event can fire between the handler checking
+ *    state and the next HTTP poll arriving.  A dedicated task with a mutex-
+ *    protected cache is simpler, more robust, and easier to reason about.
+ * =======================================================================*/
+
+#define SCAN_INTERVAL_MS  12000   /* re-scan every 12 s while portal is up */
+
+static void scan_task(void *arg)
+{
+    while (1) {
+        /* Block while STA is actively connecting -- scanning during a
+         * connection attempt can disrupt the handshake on some APs. */
+        while (s_retry_count > 0) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+
+        ESP_LOGI(TAG, "Starting WiFi scan");
+        wifi_scan_config_t scan_cfg = {
+            .ssid        = NULL,
+            .bssid       = NULL,
+            .channel     = 0,        /* all channels */
+            .show_hidden = false,
+            .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+        };
+
+        /* block=true: this task sleeps until the scan finishes (~2-4 s).
+         * Safe here because we are not the httpd task. */
+        esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "scan_start failed: %s -- retrying in 3 s",
+                     esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            continue;
+        }
+
+        uint16_t count = 0;
+        esp_wifi_scan_get_ap_num(&count);
+        if (count > SCAN_MAX_APS) count = SCAN_MAX_APS;
+
+        wifi_ap_record_t *recs = calloc(count, sizeof(wifi_ap_record_t));
+        if (recs) {
+            esp_wifi_scan_get_ap_records(&count, recs);
+
+            xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+            s_scan_count = 0;
+            for (int i = 0; i < count; i++) {
+                /* Skip entries with empty or non-printable SSIDs. */
+                if (recs[i].ssid[0] == '\0') continue;
+
+                int rssi    = recs[i].rssi;
+                int quality = rssi <= -100 ? 0
+                            : rssi >= -40  ? 100
+                            : 2 * (rssi + 100);
+
+                /* JSON-escape the SSID (only ' " ' and ' \ ' need escaping). */
+                int si = 0;
+                for (int j = 0; recs[i].ssid[j] && j < 32 && si < 63; j++) {
+                    char c = (char)recs[i].ssid[j];
+                    if (c == '"' || c == '\\') s_scan_aps[s_scan_count].ssid[si++] = '\\';
+                    s_scan_aps[s_scan_count].ssid[si++] = c;
+                }
+                s_scan_aps[s_scan_count].ssid[si] = '\0';
+                s_scan_aps[s_scan_count].quality   = quality;
+                s_scan_aps[s_scan_count].secure    = (recs[i].authmode != WIFI_AUTH_OPEN);
+                s_scan_count++;
+            }
+            s_scan_ready = true;
+            xSemaphoreGive(s_scan_mutex);
+
+            ESP_LOGI(TAG, "Scan complete: %d APs found", s_scan_count);
+            free(recs);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(SCAN_INTERVAL_MS));
+    }
+}
+
+/* =======================================================================
  *  DNS TASK
  *  Answers every UDP DNS query with an A record pointing to AP_GW_IP.
  *  This forces all hostname lookups (captive-portal probes, browsers, etc.)
  *  to resolve to the ESP32 HTTP server.
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 static void dns_task(void *arg)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -132,7 +227,7 @@ static void dns_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    ESP_LOGI(TAG, "DNS hijack listening on :%d → %s", DNS_PORT, AP_GW_IP);
+    ESP_LOGI(TAG, "DNS hijack listening on :%d -> %s", DNS_PORT, AP_GW_IP);
 
     /* Hard-code the response IP octets once. */
     uint8_t gw[4] = {192, 168, 4, 1};
@@ -175,14 +270,14 @@ static void dns_task(void *arg)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  PORTAL HTML / CSS / JS
  *
- *  Inlined as a C string literal — no filesystem required.
+ *  Inlined as a C string literal -- no filesystem required.
  *  The JS uses a poll-based scan (fetch /scan until array arrives) rather
  *  than a single blocking request, matching the non-blocking scan design
  *  in handler_scan() below.
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 static const char PORTAL_HTML[] =
 "<!DOCTYPE html><html lang='en'><head>"
 "<meta charset='UTF-8'>"
@@ -194,152 +289,157 @@ static const char PORTAL_HTML[] =
 "min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px}"
 ".card{width:100%;max-width:380px;background:#1c1f2b;border:1px solid #2e3347;"
 "border-radius:14px;padding:32px 28px}"
+".logo{font-size:2rem;text-align:center;margin-bottom:6px}"
 "h1{font-size:1.1rem;font-weight:700;text-align:center;letter-spacing:.04em;"
-"text-transform:uppercase;margin-bottom:20px}"
-".sec{font-size:.72rem;font-weight:600;text-transform:uppercase;"
+"text-transform:uppercase;margin-bottom:4px}"
+".subtitle{font-size:.78rem;color:#4a4f6a;text-align:center;margin-bottom:24px}"
+".section-label{font-size:.72rem;font-weight:600;text-transform:uppercase;"
 "letter-spacing:.05em;color:#4a4f6a;margin-bottom:8px}"
-"#net-list{display:flex;flex-direction:column;gap:6px;margin-bottom:20px;"
+"#network-list{display:flex;flex-direction:column;gap:6px;margin-bottom:20px;"
 "max-height:220px;overflow-y:auto}"
-".net{display:flex;align-items:center;justify-content:space-between;"
+".network-btn{display:flex;align-items:center;justify-content:space-between;"
 "padding:10px 12px;background:#0f1117;border:1px solid #2e3347;border-radius:8px;"
 "color:#e4e6f0;font-size:.9rem;cursor:pointer;text-align:left;"
 "transition:border-color .15s,background .15s;width:100%;font-family:inherit}"
-".net:hover,.net.sel{border-color:#3b82f6;background:#13172a}"
-".sig{font-size:.8rem;color:#4a4f6a}"
-".msg{font-size:.78rem;color:#4a4f6a;text-align:center;padding:12px 0}"
-".rescan{background:none;border:1px solid #2e3347;border-radius:6px;"
+".network-btn:hover,.network-btn.selected{border-color:#3b82f6;background:#13172a}"
+".network-name{font-weight:500}"
+".network-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}"
+".signal{font-size:.8rem;color:#4a4f6a}"
+".scan-status{font-size:.78rem;color:#4a4f6a;text-align:center;padding:12px 0}"
+".rescan-btn{background:none;border:1px solid #2e3347;border-radius:6px;"
 "color:#4a4f6a;font-size:.72rem;font-family:inherit;padding:4px 10px;"
 "cursor:pointer;margin-left:8px;transition:border-color .15s,color .15s}"
-".rescan:hover{border-color:#3b82f6;color:#e4e6f0}"
+".rescan-btn:hover{border-color:#3b82f6;color:#e4e6f0}"
 "label{display:block;font-size:.72rem;font-weight:600;text-transform:uppercase;"
 "letter-spacing:.05em;color:#4a4f6a;margin-bottom:6px}"
-"input{width:100%;padding:10px 12px;background:#0f1117;border:1px solid #2e3347;"
-"border-radius:8px;color:#e4e6f0;font-size:1rem;font-family:inherit;outline:none;"
-"transition:border-color .15s;margin-bottom:16px}"
+"input[type=text],input[type=password]{width:100%;padding:10px 12px;"
+"background:#0f1117;border:1px solid #2e3347;border-radius:8px;color:#e4e6f0;"
+"font-size:1rem;font-family:inherit;outline:none;transition:border-color .15s;"
+"margin-bottom:16px}"
 "input:focus{border-color:#3b82f6}"
-".pw{position:relative;margin-bottom:24px}"
-".pw input{margin-bottom:0;padding-right:44px}"
-".eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);"
+".pass-wrap{position:relative;margin-bottom:24px}"
+".pass-wrap input{margin-bottom:0;padding-right:44px}"
+".toggle-pass{position:absolute;right:12px;top:50%;transform:translateY(-50%);"
 "background:none;border:none;color:#4a4f6a;cursor:pointer;font-size:1rem;padding:4px}"
-".eye:hover{color:#e4e6f0}"
-".btn{width:100%;padding:12px;background:#3b82f6;color:#fff;border:none;"
-"border-radius:8px;font-size:1rem;font-weight:600;font-family:inherit;"
-"cursor:pointer;transition:background .15s}"
-".btn:hover{background:#2563eb}"
-".btn:disabled{opacity:.5;cursor:default}"
+".toggle-pass:hover{color:#e4e6f0}"
+"button[type=submit]{width:100%;padding:12px;background:#3b82f6;color:#fff;"
+"border:none;border-radius:8px;font-size:1rem;font-weight:600;font-family:inherit;"
+"cursor:pointer;transition:background .15s,opacity .15s}"
+"button[type=submit]:hover{background:#2563eb}"
+"button[type=submit]:disabled{opacity:.5;cursor:default}"
 ".status{margin-top:14px;font-size:.8rem;text-align:center;color:#4a4f6a;min-height:1.2em}"
-".err{color:#ef4444}"
-".ok{color:#4ade80}"
-".hint{margin-top:20px;padding-top:16px;border-top:1px solid #2e3347;"
+".status.error{color:#ef4444}"
+".status.ok{color:#4ade80}"
+".hint{margin-top:22px;padding-top:18px;border-top:1px solid #2e3347;"
 "font-size:.72rem;color:#4a4f6a;text-align:center;line-height:1.7}"
-".hint b{color:#e4e6f0}"
+".hint strong{color:#e4e6f0}"
 "</style></head><body><div class='card'>"
-"<h1>&#128246; WiFi Setup</h1>"
-"<p class='sec'>Available networks"
-"<button class='rescan' onclick='startScan()'>&#8635; Rescan</button></p>"
-"<div id='net-list'><p class='msg'>Scanning&hellip;</p></div>"
+"<div class='logo'>&#128246;</div>"
+"<h1>WiFi Setup</h1>"
+"<p class='subtitle'>Connect this device to your network</p>"
+"<p class='section-label'>Available networks"
+"<button class='rescan-btn' onclick='startScan()'>&#8635; Rescan</button></p>"
+"<div id='network-list'><p class='scan-status'>Scanning&hellip;</p></div>"
+"<form id='setup-form'>"
 "<label for='ssid'>Network name</label>"
-"<input id='ssid' name='ssid' type='text' placeholder='Or type manually'"
-" autocomplete='off' autocorrect='off' autocapitalize='none' spellcheck='false'>"
+"<input type='text' id='ssid' name='ssid' placeholder='Or type manually'"
+" autocomplete='off' autocorrect='off' autocapitalize='none' spellcheck='false' required>"
 "<label for='pass'>Password</label>"
-"<div class='pw'>"
-"<input id='pass' name='pass' type='password' placeholder='Leave blank if open'>"
-"<button type='button' class='eye' id='eye'>&#128065;</button>"
+"<div class='pass-wrap'>"
+"<input type='password' id='pass' name='pass' placeholder='Leave blank if open network'>"
+"<button type='button' class='toggle-pass' aria-label='Show/hide password'>&#128065;</button>"
 "</div>"
-"<button class='btn' id='btn' onclick='save()'>Save &amp; Connect</button>"
-"<p class='status' id='st'></p>"
-"<p class='hint'>After connecting, rejoin your normal WiFi.<br>"
+"<button type='submit' id='submit-btn'>Save &amp; Connect</button>"
+"<p class='status' id='status'></p>"
+"</form>"
+"<p class='hint'>After saving, the device will reboot and join your network.<br>"
 "To reconfigure: hold BOOT 3&nbsp;s at power-up.</p>"
 "</div><script>"
 
-/* ── Helpers ── */
-"function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
-"function bars(q){"
+/* -- Helpers -- */
+"function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}"
+"function signalBars(q){"
 "if(q>80)return'\u2582\u2584\u2586\u2588';"
 "if(q>60)return'\u2582\u2584\u2586\xb7';"
 "if(q>40)return'\u2582\u2584\xb7\xb7';"
 "return'\u2582\xb7\xb7\xb7';}"
-"function setStatus(msg,cls){"
-"var el=document.getElementById('st');"
-"el.textContent=msg;el.className='status '+(cls||'');}"
 
-/* ── Network list ── */
-"function renderNets(nets){"
-"var el=document.getElementById('net-list');"
-"el.innerHTML='';"
-"if(!nets.length){"
-"el.innerHTML='<p class=\"msg\">No networks found. "
-"<button class=\"rescan\" onclick=\"startScan()\">Rescan</button></p>';return;}"
-"nets.sort(function(a,b){return b.quality-a.quality;});"
-"nets.forEach(function(n){"
-"var b=document.createElement('button');"
-"b.className='net';b.type='button';"
-"b.innerHTML='<span>'+esc(n.ssid)+'</span>'"
-"+'<span class=\"sig\">'+bars(n.quality)+' '+n.quality+'%"
-"'+(n.secure?' &#128274;':'')+'</span>';"
-"b.onclick=function(){"
-"el.querySelectorAll('.net').forEach(function(x){x.classList.remove('sel');});"
-"b.classList.add('sel');"
-"document.getElementById('ssid').value=n.ssid;"
-"if(n.secure)document.getElementById('pass').focus();"
-"else document.getElementById('pass').value='';};"
-"el.appendChild(b);});}"
+/* -- Network list -- */
+"function renderNetworks(networks){"
+"var listEl=document.getElementById('network-list');"
+"listEl.innerHTML='';"
+"if(!networks||!networks.length){"
+"listEl.innerHTML='<p class=\"scan-status\">No networks found."
+" <button class=\"rescan-btn\" onclick=\"startScan()\">Rescan</button></p>';return;}"
+"networks.sort(function(a,b){return b.quality-a.quality;});"
+"networks.forEach(function(net){"
+"var btn=document.createElement('button');"
+"btn.type='button';btn.className='network-btn';"
+"btn.innerHTML="
+"'<span class=\"network-name\">'+escHtml(net.ssid)+'</span>'"
+"+'<span class=\"network-meta\">'"
+"+'<span class=\"signal\">'+signalBars(net.quality)+' '+net.quality+'%</span>'"
+"+(net.secure?'<span>&#128274;</span>':'')+'</span>';"
+"btn.addEventListener('click',function(){"
+"listEl.querySelectorAll('.network-btn').forEach(function(b){b.classList.remove('selected');});"
+"btn.classList.add('selected');"
+"document.getElementById('ssid').value=net.ssid;"
+"if(net.secure)document.getElementById('pass').focus();"
+"else document.getElementById('pass').value='';});"
+"listEl.appendChild(btn);});}"
 
-/* ── Scan polling — GET /scan until server returns an array ── */
-"var scanTid=null;"
+/* -- Scan: poll GET /scan until server returns an array -- */
+"var scanPoll=null;"
 "function pollScan(){"
 "fetch('/scan')"
 ".then(function(r){return r.ok?r.json():Promise.reject(r.status);})"
 ".then(function(d){"
-"if(Array.isArray(d)){renderNets(d);}"  /* done */
-"else{scanTid=setTimeout(pollScan,1500);}})  " /* still scanning, try again */
-".catch(function(){scanTid=setTimeout(pollScan,3000);});}"  /* network error, back off */
+"if(Array.isArray(d)){renderNetworks(d);}"
+"else{scanPoll=setTimeout(pollScan,1500);}})" // Changed ); to })
+".catch(function(){scanPoll=setTimeout(pollScan,3000);});}"
 "function startScan(){"
-"document.getElementById('net-list').innerHTML='<p class=\"msg\">Scanning&hellip;</p>';"
-"clearTimeout(scanTid);"
+"document.getElementById('network-list').innerHTML='<p class=\"scan-status\">Scanning&hellip;</p>';"
+"clearTimeout(scanPoll);"
 "pollScan();}"
 
-/* ── Password toggle ── */
-"document.getElementById('eye').onclick=function(){"
+/* -- Password toggle -- */
+"document.querySelector('.toggle-pass').addEventListener('click',function(){"
 "var p=document.getElementById('pass');"
-"p.type=p.type==='password'?'text':'password';};"
+"p.type=p.type==='password'?'text':'password';});"
 
-/* ── Save + connect flow ── */
-"function save(){"
+/* -- Save flow -- borrowed from the 8266 project:
+ *   POST /save -> device saves to NVS and reboots.
+ *   The AP disappears, the fetch() catch fires, and we redirect
+ *   the user to the device's normal hostname. No /connect-status
+ *   polling required -- the reboot is the connection attempt. -- */
+"document.getElementById('setup-form').addEventListener('submit',function(e){"
+"e.preventDefault();"
 "var ssid=document.getElementById('ssid').value.trim();"
-"if(!ssid){setStatus('Please select or enter a network name.','err');return;}"
-"var btn=document.getElementById('btn');"
+"if(!ssid)return;"
+"var statusEl=document.getElementById('status');"
+"var btn=document.getElementById('submit-btn');"
 "btn.disabled=true;btn.textContent='Saving...';"
-"setStatus('Sending credentials...');"
+"statusEl.textContent='Sending credentials...';"
+"statusEl.className='status';"
 "var body='ssid='+encodeURIComponent(ssid)"
 "+'&pass='+encodeURIComponent(document.getElementById('pass').value);"
-"fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
-".then(function(r){return r.ok?r.json():Promise.reject(r.status);})"
-".then(function(){setStatus('Saved. Testing connection...');setTimeout(pollStatus,1500);})"
-".catch(function(){setStatus('Error saving — check connection.','err');btn.disabled=false;btn.textContent='Save & Connect';});}"
-
-/* ── Poll /connect-status until success or failure ── */
-"function pollStatus(){"
-"fetch('/connect-status')"
-".then(function(r){return r.ok?r.json():Promise.reject(r.status);})"
-".then(function(d){"
-"if(d.status==='connecting'){setStatus('Connecting...');setTimeout(pollStatus,2000);}"
-"else if(d.status==='success'){setStatus('Connected! IP: '+d.ip,'ok');}"
-"else if(d.status==='failed'){"
-"setStatus('Wrong password or network unreachable.','err');"
-"var btn=document.getElementById('btn');"
-"btn.disabled=false;btn.textContent='Try Again';})"
+"fetch('/save',{method:'POST',"
+"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
+".then(function(){"
+"statusEl.textContent='Saved! Device is rebooting and joining your network...';"
+"statusEl.className='status ok';})"
 ".catch(function(){"
-/* If the fetch fails the device likely switched to STA-only mode — success. */
-"setStatus('Connected to your network!','ok');});}"
+/* fetch error = device rebooted and AP is gone = expected success path */
+"statusEl.textContent='Device rebooting -- check your normal WiFi in a moment.';"
+"statusEl.className='status ok';});});"
 
-/* ── Boot ── */
+/* -- Boot -- */
 "startScan();"
 "</script></html>";
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  HELPERS
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 /**
  * Decode a percent-encoded URL query value into dst.
@@ -386,11 +486,11 @@ static void extract_field(const char *body, const char *key,
     url_decode(raw, out, out_size);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  HTTP HANDLERS — application endpoints
- * ═══════════════════════════════════════════════════════════════════════*/
+/* =======================================================================
+ *  HTTP HANDLERS -- application endpoints
+ * =======================================================================*/
 
-/** GET / — serve the portal page. */
+/** GET / -- serve the portal page. */
 static esp_err_t handle_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
@@ -399,93 +499,50 @@ static esp_err_t handle_root(httpd_req_t *req)
 }
 
 /**
- * GET /scan — non-blocking WiFi scan using the three-state machine.
+ * GET /scan -- return cached WiFi scan results as a JSON array.
  *
- * Returns {"status":"scanning"} while the scan is in progress.
- * Returns a JSON array of {ssid, quality, secure} objects when done.
- * The browser JS re-polls every 1.5 s until it receives an array.
+ * Results are populated by scan_task(), which runs a blocking scan on its
+ * own FreeRTOS task every SCAN_INTERVAL_MS milliseconds.  This handler
+ * never touches the WiFi driver -- it only reads the shared cache under a
+ * mutex, so it is safe to call from the httpd task at any time.
  *
- * Why non-blocking: calling esp_wifi_scan_start(block=true) from inside
- * an httpd handler starves the TCP/IP stack — the HTTP response is never
- * sent and the browser's fetch() hangs until it times out.
+ * Returns {"status":"scanning"} until the first scan completes.
+ * Returns a JSON array of {ssid, quality, secure} objects thereafter.
  */
 static esp_err_t handle_scan(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
-    if (s_scan_state == SCAN_IDLE) {
-        /* Kick off a background scan.  WIFI_EVENT_SCAN_DONE will set
-         * s_scan_state = SCAN_DONE when results are ready. */
-        wifi_scan_config_t scan_cfg = {
-            .ssid        = NULL,   /* scan all SSIDs */
-            .bssid       = NULL,   /* scan all BSSIDs */
-            .channel     = 0,      /* scan all channels */
-            .show_hidden = false,
-            .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
-        };
-        esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "scan_start failed: %s", esp_err_to_name(err));
-            /* Return scanning status; JS will retry and likely succeed once
-             * any pending STA operation settles. */
-        } else {
-            s_scan_state = SCAN_RUNNING;
-        }
+    if (!s_scan_ready) {
         httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
         return ESP_OK;
     }
 
-    if (s_scan_state == SCAN_RUNNING) {
-        httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
+    /* Lock, serialise the cache to JSON, unlock. */
+    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+
+    /* Upper bound: each entry is at most ~90 bytes + 2 for [] */
+    char *json = malloc(s_scan_count * 90 + 4);
+    if (!json) {
+        xSemaphoreGive(s_scan_mutex);
+        httpd_resp_send_500(req);
         return ESP_OK;
     }
-
-    /* SCAN_DONE — harvest results, then reset so the next call re-scans. */
-    s_scan_state = SCAN_IDLE;
-
-    uint16_t count = 0;
-    esp_wifi_scan_get_ap_num(&count);
-    if (count > 20) count = 20;  /* cap to avoid large heap allocations */
-
-    if (count == 0) {
-        httpd_resp_sendstr(req, "[]");
-        return ESP_OK;
-    }
-
-    wifi_ap_record_t *recs = calloc(count, sizeof(wifi_ap_record_t));
-    if (!recs) { httpd_resp_send_500(req); return ESP_OK; }
-    esp_wifi_scan_get_ap_records(&count, recs);
-
-    /* Each JSON object is at most ~90 bytes; plus 2 for "[]" and a spare. */
-    char *json = malloc(count * 90 + 4);
-    if (!json) { free(recs); httpd_resp_send_500(req); return ESP_OK; }
 
     int pos = 0;
     pos += sprintf(json + pos, "[");
-    for (int i = 0; i < count; i++) {
-        /* Map RSSI (-100 … -40 dBm) to a 0–100% quality value. */
-        int rssi    = recs[i].rssi;
-        int quality = rssi <= -100 ? 0 : rssi >= -40 ? 100 : 2 * (rssi + 100);
-
-        /* JSON-escape the SSID (only '"' and '\' need escaping here). */
-        char safe_ssid[65] = {0};
-        int  si = 0;
-        for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
-            char c = (char)recs[i].ssid[j];
-            if (c == '"' || c == '\\') safe_ssid[si++] = '\\';
-            safe_ssid[si++] = c;
-        }
-
+    for (int i = 0; i < s_scan_count; i++) {
         pos += sprintf(json + pos,
             "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
             i ? "," : "",
-            safe_ssid,
-            quality,
-            recs[i].authmode != WIFI_AUTH_OPEN ? "true" : "false");
+            s_scan_aps[i].ssid,
+            s_scan_aps[i].quality,
+            s_scan_aps[i].secure ? "true" : "false");
     }
     pos += sprintf(json + pos, "]");
-    free(recs);
+
+    xSemaphoreGive(s_scan_mutex);
 
     httpd_resp_send(req, json, pos);
     free(json);
@@ -493,10 +550,22 @@ static esp_err_t handle_scan(httpd_req_t *req)
 }
 
 /**
- * POST /save — receive SSID + password, persist to NVS, start STA connect.
+ * POST /save -- persist credentials to NVS and schedule a device reboot.
+ *
+ * Borrowed from the 8266 project: save-and-reboot is simpler and more
+ * reliable than trying to connect from within APSTA mode.
+ *
+ *   1. Credentials written to NVS.
+ *   2. HTTP 200 response sent to the browser.
+ *   3. Reboot scheduled 1.2 s later (gives the TCP stack time to flush).
+ *   4. Device reboots into STA-only mode and connects to the target network.
+ *
+ * The browser's fetch() will either get the 200 (fast) or a network error
+ * (if the AP shuts down before the response arrives) -- both cases are
+ * handled by the JS, which shows a success message either way.
  *
  * Body: application/x-www-form-urlencoded  ssid=<val>&pass=<val>
- * Response: {"ok":true} or HTTP 400.
+ * Response: HTTP 200 plain text, then device reboots.
  */
 static esp_err_t handle_save(httpd_req_t *req)
 {
@@ -514,7 +583,12 @@ static esp_err_t handle_save(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid required");
         return ESP_OK;
     }
-    ESP_LOGI(TAG, "Credentials received for SSID: %s", ssid);
+    ESP_LOGI(TAG, "Saving credentials for SSID: %s", ssid);
+
+    /* Notify UI state machine. */
+    mgr_event_t ev = {.state = WIFI_MANAGER_STATE_CREDS_RECEIVED};
+    strncpy(ev.ssid, ssid, sizeof(ev.ssid) - 1);
+    xQueueSend(s_event_queue, &ev, 0);
 
     /* Persist to NVS. */
     nvs_handle_t nvs;
@@ -525,69 +599,18 @@ static esp_err_t handle_save(httpd_req_t *req)
         nvs_close(nvs);
     }
 
-    /* Cache locally so the state callbacks can read the SSID. */
-    strncpy(s_sta_ssid, ssid, sizeof(s_sta_ssid) - 1);
-    strncpy(s_sta_pass, pass, sizeof(s_sta_pass) - 1);
-    s_retry_count = 0;
-    s_connected   = false;
-    s_sta_failed  = false;
+    /* Respond before rebooting so the browser receives the reply. */
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "Saved. Rebooting...");
 
-    /* Notify UI that we have credentials and are about to connect. */
-    mgr_event_t ev = {.state = WIFI_MANAGER_STATE_CREDS_RECEIVED};
-    strncpy(ev.ssid, ssid, sizeof(ev.ssid) - 1);
-    xQueueSend(s_event_queue, &ev, 0);
+    /* Short delay then reboot from a separate task so the HTTP response
+     * has time to be flushed through the TCP stack. */
+    vTaskDelay(pdMS_TO_TICKS(1200));
+    esp_restart();
 
-    /* Kick off STA connection. */
-    wifi_config_t sta_cfg = {0};
-    strncpy((char *)sta_cfg.sta.ssid,     ssid, sizeof(sta_cfg.sta.ssid)     - 1);
-    strncpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password) - 1);
-    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-    esp_wifi_connect();
-
-    mgr_event_t ev2 = {.state = WIFI_MANAGER_STATE_STA_CONNECTING};
-    strncpy(ev2.ssid, ssid, sizeof(ev2.ssid) - 1);
-    xQueueSend(s_event_queue, &ev2, 0);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    return ESP_OK;
+    return ESP_OK;  /* unreachable, but satisfies the compiler */
 }
 
-/** GET /connect-status — polled by JS after /save to learn the outcome. */
-static esp_err_t handle_connect_status(httpd_req_t *req)
-{
-    char buf[64];
-    if (s_connected) {
-        snprintf(buf, sizeof(buf), "{\"status\":\"success\",\"ip\":\"%s\"}", s_ip);
-    } else if (s_sta_failed) {
-        snprintf(buf, sizeof(buf), "{\"status\":\"failed\"}");
-    } else {
-        snprintf(buf, sizeof(buf), "{\"status\":\"connecting\"}");
-    }
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr(req, buf);
-    return ESP_OK;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
- *  HTTP HANDLERS — OS captive-portal probes
- *
- *  Every OS that connects to a WiFi network silently probes a well-known
- *  URL to test for internet connectivity.  The DNS hijack redirects those
- *  probes to us, and we must respond with exactly what the OS expects —
- *  the wrong response suppresses the "sign in to network" notification.
- *
- *  These are registered BEFORE the catch-all wildcard so they are matched
- *  first.  See wifi_manager.h for the per-OS summary table.
- * ═══════════════════════════════════════════════════════════════════════*/
-
-/**
- * Windows 10/11 — probes GET+HEAD /connecttest.txt on msftconnecttest.com.
- * Requires HTTP 200 + exact body "Microsoft Connect Test".
- * Any other response (including 302) causes Windows to silently skip the
- * "Open browser to sign in" notification and open msn.com instead.
- */
 static esp_err_t handle_probe_win_modern(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/plain");
@@ -596,7 +619,7 @@ static esp_err_t handle_probe_win_modern(httpd_req_t *req)
 }
 
 /**
- * Windows 7/8 (legacy NCSI) — probes /ncsi.txt on msftncsi.com.
+ * Windows 7/8 (legacy NCSI) -- probes /ncsi.txt on msftncsi.com.
  * Requires HTTP 200 + exact body "Microsoft NCSI".
  */
 static esp_err_t handle_probe_win_legacy(httpd_req_t *req)
@@ -607,7 +630,7 @@ static esp_err_t handle_probe_win_legacy(httpd_req_t *req)
 }
 
 /**
- * iOS / macOS — probes /hotspot-detect.html on captive.apple.com and
+ * iOS / macOS -- probes /hotspot-detect.html on captive.apple.com and
  * /library/test/success.html on www.apple.com.
  * Requires HTTP 200 + body containing the literal string "<Success>".
  * We also add a JS redirect so the CNA mini-browser navigates straight to
@@ -626,7 +649,7 @@ static esp_err_t handle_probe_apple(httpd_req_t *req)
 }
 
 /**
- * Android — probes /generate_204 on various Google hostnames.
+ * Android -- probes /generate_204 on various Google hostnames.
  * Expects HTTP 204 when internet is present; any other status triggers
  * the "Sign in to network" notification.  We return 302 so Android also
  * navigates the user to the portal directly.
@@ -640,7 +663,7 @@ static esp_err_t handle_probe_android(httpd_req_t *req)
 }
 
 /**
- * Catch-all — redirect anything else to the portal.
+ * Catch-all -- redirect anything else to the portal.
  * By the time a real browser makes an arbitrary request, the OS has already
  * shown the sign-in notification via one of the dedicated probe handlers above.
  */
@@ -652,9 +675,9 @@ static esp_err_t handle_captive_redirect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  HTTP SERVER LIFECYCLE
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 static void http_server_start(void)
 {
@@ -667,15 +690,14 @@ static void http_server_start(void)
         return;
     }
 
-    /* ── Application endpoints ────────────────────────────────────────
+    /* -- Application endpoints ----------------------------------------
      * All registered before captive-probe paths to guarantee priority. */
     static const httpd_uri_t routes[] = {
         {.uri="/",               .method=HTTP_GET,  .handler=handle_root           },
         {.uri="/scan",           .method=HTTP_GET,  .handler=handle_scan           },
         {.uri="/save",           .method=HTTP_POST, .handler=handle_save           },
-        {.uri="/connect-status", .method=HTTP_GET,  .handler=handle_connect_status },
 
-        /* Windows 10/11 — GET and HEAD both required */
+        /* Windows 10/11 -- GET and HEAD both required */
         {.uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_probe_win_modern},
         {.uri="/connecttest.txt", .method=HTTP_HEAD, .handler=handle_probe_win_modern},
 
@@ -690,7 +712,7 @@ static void http_server_start(void)
         /* Android */
         {.uri="/generate_204", .method=HTTP_GET, .handler=handle_probe_android},
 
-        /* Catch-all — MUST be last */
+        /* Catch-all -- MUST be last */
         {.uri="/*", .method=HTTP_GET, .handler=handle_captive_redirect},
     };
 
@@ -709,9 +731,9 @@ static void http_server_stop(void)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  SOFTAP + PORTAL START
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 static void portal_start(void)
 {
@@ -737,6 +759,14 @@ static void portal_start(void)
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     ESP_LOGI(TAG, "SoftAP started: SSID=%s", s_cfg.ap_ssid);
 
+    if (!s_scan_mutex) {
+        s_scan_mutex = xSemaphoreCreateMutex();
+    }
+    if (!s_scan_task) {
+        /* Stack 4 kB: scan_task calls esp_wifi_scan_start (blocking) and
+         * does a small heap alloc for AP records -- 4 kB is sufficient. */
+        xTaskCreate(scan_task, "wifi_mgr_scan", 4096, NULL, 3, &s_scan_task);
+    }
     if (!s_dns_task) {
         xTaskCreate(dns_task, "wifi_mgr_dns", 4096, NULL, 5, &s_dns_task);
     }
@@ -748,9 +778,9 @@ static void portal_start(void)
     xQueueSend(s_event_queue, &ev, 0);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  NVS HELPERS
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 static bool nvs_load_credentials(char *ssid, size_t ssid_sz,
                                   char *pass, size_t pass_sz)
@@ -760,7 +790,7 @@ static bool nvs_load_credentials(char *ssid, size_t ssid_sz,
 
     bool ok = (nvs_get_str(nvs, NVS_KEY_SSID, ssid, &ssid_sz) == ESP_OK)
               && (ssid[0] != '\0');
-    /* Password is optional — open networks have no password stored. */
+    /* Password is optional -- open networks have no password stored. */
     nvs_get_str(nvs, NVS_KEY_PASS, pass, &pass_sz);
 
     nvs_close(nvs);
@@ -768,11 +798,11 @@ static bool nvs_load_credentials(char *ssid, size_t ssid_sz,
     return ok;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  WIFI EVENT HANDLER
- *  Runs in the WiFi/lwIP system task — must not call user code or block.
+ *  Runs in the WiFi/lwIP system task -- must not call user code or block.
  *  All it does is push mgr_event_t messages onto the queue for event_task.
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 static void wifi_event_cb(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
@@ -793,11 +823,6 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
                 mgr_event_t ev = {.state = WIFI_MANAGER_STATE_STA_FAILED};
                 xQueueSend(s_event_queue, &ev, 0);
             }
-            break;
-
-        case WIFI_EVENT_SCAN_DONE:
-            /* Signal handle_scan() that results are ready. */
-            s_scan_state = SCAN_DONE;
             break;
 
         case WIFI_EVENT_AP_STACONNECTED:
@@ -829,17 +854,17 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  EVENT DISPATCH TASK
  *  Runs user callbacks from a predictable task context, not from the
  *  WiFi event handler.  display_* calls and other driver APIs are safe here.
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 static void event_task(void *arg)
 {
     mgr_event_t ev;
     while (xQueueReceive(s_event_queue, &ev, portMAX_DELAY) == pdTRUE) {
-        ESP_LOGI(TAG, "state → %d", ev.state);
+        ESP_LOGI(TAG, "state -> %d", ev.state);
         if (s_cfg.on_state_change) {
             s_cfg.on_state_change(ev.state, s_cfg.cb_ctx);
         }
@@ -849,16 +874,16 @@ static void event_task(void *arg)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* =======================================================================
  *  PUBLIC API
- * ═══════════════════════════════════════════════════════════════════════*/
+ * =======================================================================*/
 
 esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 {
     if (!config || !config->ap_ssid) return ESP_ERR_INVALID_ARG;
     memcpy(&s_cfg, config, sizeof(s_cfg));
 
-    /* NVS — init here; callers should not need to call nvs_flash_init() themselves. */
+    /* NVS -- init here; callers should not need to call nvs_flash_init() themselves. */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS partition dirty, erasing");
@@ -884,7 +909,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
     s_event_queue = xQueueCreate(10, sizeof(mgr_event_t));
     xTaskCreate(event_task, "wifi_mgr_evt", 4096, NULL, 4, &s_event_task);
 
-    /* ── Try stored credentials first ──────────────────────────────── */
+    /* -- Try stored credentials first -------------------------------- */
     char saved_ssid[33] = {0};
     char saved_pass[64] = {0};
 
@@ -912,7 +937,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
             pdMS_TO_TICKS(10000));
 
         if (bits & EVT_STA_CONNECTED) {
-            return ESP_OK;  /* connected — skip portal entirely */
+            return ESP_OK;  /* connected -- skip portal entirely */
         }
 
         /* Credential attempt failed or timed out.  Reset retry counter
