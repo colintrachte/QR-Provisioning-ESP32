@@ -426,8 +426,9 @@ static const char PORTAL_HTML[] =
 "fetch('/save',{method:'POST',"
 "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
 ".then(function(){"
-"statusEl.textContent='Saved! Device is rebooting and joining your network...';"
-"statusEl.className='status ok';})"
+"statusEl.textContent='Saved! Device is joining your network...';"
+"statusEl.className='status ok';"
+"if(response.ok) {window.location.href = '/success';}})"
 ".catch(function(){"
 /* fetch error = device rebooted and AP is gone = expected success path */
 "statusEl.textContent='Device rebooting -- check your normal WiFi in a moment.';"
@@ -497,7 +498,14 @@ static esp_err_t handle_root(httpd_req_t *req)
     httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
-
+/* Handler for a simple success page */
+esp_err_t handle_success(httpd_req_t *req)
+{
+    const char* resp = "<html><body><h1>Connection Successful!</h1>"
+                       "<p>The device is now online. You can close this page.</p>"
+                       "</body></html>";
+    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+}
 /**
  * GET /scan -- return cached WiFi scan results as a JSON array.
  *
@@ -696,6 +704,7 @@ static void http_server_start(void)
         {.uri="/",               .method=HTTP_GET,  .handler=handle_root           },
         {.uri="/scan",           .method=HTTP_GET,  .handler=handle_scan           },
         {.uri="/save",           .method=HTTP_POST, .handler=handle_save           },
+        {.uri="/success",        .method=HTTP_GET,  .handler=handle_success          },
 
         /* Windows 10/11 -- GET and HEAD both required */
         {.uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_probe_win_modern},
