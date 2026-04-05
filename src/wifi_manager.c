@@ -942,8 +942,18 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 
         /* Credential attempt failed or timed out.  Reset retry counter
          * and fall through to the portal. */
+        /* 1. Stop the failing connection attempt immediately */
+        esp_wifi_disconnect();
+
+        /* 2. Clear the retry count to unlock the scan_task */
         s_retry_count = 0;
         s_sta_failed  = false;
+
+        /* Force a full radio state clear by toggling modes.
+         * This kicks the driver out of the failed-connect loop. */
+        esp_wifi_set_mode(WIFI_MODE_NULL);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
     }
 
     portal_start();
