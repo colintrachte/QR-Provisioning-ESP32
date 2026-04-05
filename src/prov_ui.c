@@ -91,13 +91,10 @@ static void render_connected(const char *ssid, const char *ip)
     snprintf(trunc, sizeof(trunc), "%.21s", ssid);
 
     display_clear();
-    display_draw_text(40,  0, "OK!",          DISP_FONT_BOLD);
+    display_draw_text(0,  0, ip,          DISP_FONT_BOLD);
     display_draw_hline(0, 13, DISP_WIDTH);
     display_draw_text( 0, 16, "Connected to:", DISP_FONT_NORMAL);
     display_draw_text( 0, 27, trunc,           DISP_FONT_MEDIUM);
-    display_draw_hline(0, 42, DISP_WIDTH);
-    display_draw_text( 0, 45, "IP address:",   DISP_FONT_NORMAL);
-    display_draw_text( 0, 54, ip,              DISP_FONT_BOLD);
     display_flush();
 }
 
