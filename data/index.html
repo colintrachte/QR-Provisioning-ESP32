@@ -1,54 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Mule Robot</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Mule Robot</title>
+    <link rel="stylesheet" href="/style.css">
 </head>
+
 <body>
-  <div class="shell">
+    <div class="shell">
 
-    <header>
-      <h1>Mule Robot</h1>
-      <div id="conn-badge" class="conn-badge disconnected">
-        <span class="conn-dot"></span>
-        <span class="conn-label">Disconnected</span>
-      </div>
-    </header>
+        <header>
+            <h1>Mule Robot</h1>
+            <div id="conn-badge" class="conn-badge disconnected">
+                <span class="conn-dot"></span>
+                <span class="conn-label">Disconnected</span>
+            </div>
+        </header>
 
-    <section class="joystick-section">
-      <div id="joystick-zone">
-        <div id="joystick-knob"></div>
-      </div>
-      <p class="key-hint">Drag · or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></p>
-    </section>
+        <section class="joystick-section">
+            <div id="joystick-zone">
+                <div id="joystick-knob"></div>
+            </div>
+            <p class="key-hint">Drag · or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></p>
+        </section>
 
-    <section class="telemetry-grid">
+        <section class="telemetry-grid">
 
-      <div class="track-card" id="card-left">
-        <h2 class="track-label">Left</h2>
-        <div class="speed-bar-track">
-          <div class="speed-bar" id="bar-left"></div>
-        </div>
-        <span class="speed-value" id="speed-left">0</span>
-        <span class="drive-state" id="state-left">STOPPED</span>
-        <span class="drive-dir"   id="dir-left">—</span>
-      </div>
+            <div class="track-card" id="card-left">
+                <h2 class="track-label">Left</h2>
+                <div class="speed-bar-track">
+                    <div class="speed-bar" id="bar-left"></div>
+                </div>
+                <span class="speed-value" id="speed-left">0</span>
+                <span class="drive-state" id="state-left">STOPPED</span>
+                <span class="drive-dir" id="dir-left">—</span>
+            </div>
 
-      <div class="track-card" id="card-right">
-        <h2 class="track-label">Right</h2>
-        <div class="speed-bar-track">
-          <div class="speed-bar" id="bar-right"></div>
-        </div>
-        <span class="speed-value" id="speed-right">0</span>
-        <span class="drive-state" id="state-right">STOPPED</span>
-        <span class="drive-dir"   id="dir-right">—</span>
-      </div>
+            <div class="track-card" id="card-right">
+                <h2 class="track-label">Right</h2>
+                <div class="speed-bar-track">
+                    <div class="speed-bar" id="bar-right"></div>
+                </div>
+                <span class="speed-value" id="speed-right">0</span>
+                <span class="drive-state" id="state-right">STOPPED</span>
+                <span class="drive-dir" id="dir-right">—</span>
+            </div>
 
-    </section>
+        </section>
 
-  </div>
-  <script src="script.js"></script>
+    </div>
+    <script src="/script.js"></script>
 </body>
+
 </html>

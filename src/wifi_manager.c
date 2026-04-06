@@ -70,26 +70,66 @@ static esp_err_t serve_file(httpd_req_t *req,
                              const char  *path,
                              const char  *mime_type)
 {
-    FILE *f = fopen(path, "r");
+    ESP_LOGI(TAG, "serve_file: [1/5] request  uri=%s  file=%s  mime=%s",
+             req->uri, path, mime_type);
+
+    /* Step 2 — open file (binary mode: no CR/LF translation, correct byte counts). */
+    FILE *f = fopen(path, "rb");
     if (!f) {
-        ESP_LOGW(TAG, "serve_file: not found: %s", path);
+        ESP_LOGE(TAG, "serve_file: [2/5] OPEN FAILED: %s  (check pio run -t uploadfs)", path);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
         return ESP_OK;
     }
+
+    /* Measure file size for the log. */
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    rewind(f);
+    ESP_LOGI(TAG, "serve_file: [2/5] opened   %s  (%ld bytes)", path, file_size);
+
+    /* Step 3 — set MIME type. */
     httpd_resp_set_type(req, mime_type);
+    ESP_LOGI(TAG, "serve_file: [3/5] headers  Content-Type: %s", mime_type);
+
+    /* Step 4 — stream file in chunks. */
     char *buf = malloc(FS_CHUNK_SIZE);
-    if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
+    if (!buf) {
+        ESP_LOGE(TAG, "serve_file: [4/5] MALLOC FAILED (heap too small?)");
+        fclose(f);
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
     size_t n;
-    bool send_ok = true;
+    size_t total_sent = 0;
+    int    chunk_num  = 0;
+    bool   send_ok    = true;
+
     while (send_ok && (n = fread(buf, 1, FS_CHUNK_SIZE, f)) > 0) {
+        chunk_num++;
         if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
-            ESP_LOGW(TAG, "serve_file: chunk send failed: %s", path);
+            ESP_LOGE(TAG, "serve_file: [4/5] CHUNK SEND FAILED  file=%s  chunk=%d  sent=%u/%ld",
+                     path, chunk_num, (unsigned)total_sent, file_size);
             send_ok = false;
+        } else {
+            total_sent += n;
+            ESP_LOGD(TAG, "serve_file: [4/5] chunk %d  +%u bytes  (%u/%ld total)",
+                     chunk_num, (unsigned)n, (unsigned)total_sent, file_size);
         }
     }
-    /* Always terminate chunked transfer so the browser does not hang,
-     * even when a mid-stream send error occurred. */
+
+    /* Step 5 — terminate chunked transfer (mandatory even after a send error,
+     * so the browser connection is cleanly closed rather than hanging). */
     httpd_resp_send_chunk(req, NULL, 0);
+
+    if (send_ok) {
+        ESP_LOGI(TAG, "serve_file: [5/5] DONE  %s  sent=%u bytes  chunks=%d",
+                 path, (unsigned)total_sent, chunk_num);
+    } else {
+        ESP_LOGW(TAG, "serve_file: [5/5] PARTIAL  %s  sent=%u/%ld bytes",
+                 path, (unsigned)total_sent, file_size);
+    }
+
     free(buf);
     fclose(f);
     return ESP_OK;
@@ -586,28 +626,57 @@ static void fs_mount(void)
     esp_vfs_littlefs_conf_t cfg = {
         .base_path              = FS_BASE_PATH,
         .partition_label        = FS_PARTITION,
+        /* format_if_mount_failed: recover from a blank or corrupt partition
+         * (e.g. first boot after flashing firmware without running uploadfs).
+         * The partition will be empty after formatting, so the serve_file()
+         * log will show 0 files -- that is the cue to run uploadfs. */
+        .format_if_mount_failed = true,
     };
     esp_err_t err = esp_vfs_littlefs_register(&cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(err));
-        ESP_LOGE(TAG, "Partition 'storage' at 0x520000 may be missing or corrupt.");
+        ESP_LOGE(TAG, "+-LittleFS MOUNT FAILED ------------------------------------------");
+        ESP_LOGE(TAG, "| error     : %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "| partition : '" FS_PARTITION "'");
+        ESP_LOGE(TAG, "| Even format_if_mount_failed could not recover.");
+        ESP_LOGE(TAG, "| Check partitions.csv offset/size match flash layout.");
+        ESP_LOGE(TAG, "+----------------------------------------------------------------");
     } else {
         ESP_LOGI(TAG, "LittleFS mounted at " FS_BASE_PATH);
         s_mounted = true;
 
-        /* List every file in the filesystem on boot so the serial log
-         * confirms exactly what was flashed and at what VFS path.      */
+        /* Walk the filesystem and print every file with its size.
+         * This appears in the serial monitor immediately after boot so
+         * you can confirm exactly what was flashed without guessing. */
         DIR *dp = opendir(FS_BASE_PATH);
         if (dp) {
             struct dirent *de;
-            ESP_LOGI(TAG, "--- LittleFS contents ---");
+            int   file_count  = 0;
+            long  total_bytes = 0;
+
+            ESP_LOGI(TAG, "+-LittleFS contents (" FS_BASE_PATH ") -------------------------");
             while ((de = readdir(dp)) != NULL) {
-                ESP_LOGI(TAG, "  %s/%s", FS_BASE_PATH, de->d_name);
+                /* Build full path to stat() for size. */
+                /* PATH_MAX for LittleFS: FS_BASE_PATH (9) + '/' (1) + NAME_MAX (255) + NUL (1) = 266. */
+                char full[9 + 1 + 255 + 1];
+                snprintf(full, sizeof(full), FS_BASE_PATH "/%s", de->d_name);
+
+                FILE *tf = fopen(full, "rb");
+                long sz = 0;
+                if (tf) { fseek(tf, 0, SEEK_END); sz = ftell(tf); fclose(tf); }
+
+                ESP_LOGI(TAG, "| %-32s  %6ld B", de->d_name, sz);
+                file_count++;
+                total_bytes += sz;
             }
             closedir(dp);
-            ESP_LOGI(TAG, "--- end ---");
+
+            if (file_count == 0) {
+                ESP_LOGW(TAG, "|  (empty -- run: pio run -t uploadfs)");
+            }
+            ESP_LOGI(TAG, "| %d file(s),  %ld bytes total", file_count, total_bytes);
+            ESP_LOGI(TAG, "+----------------------------------------------------------------");
         } else {
-            ESP_LOGW(TAG, "opendir(" FS_BASE_PATH ") failed");
+            ESP_LOGW(TAG, "opendir(" FS_BASE_PATH ") failed -- filesystem may be empty");
         }
     }
 }
@@ -690,6 +759,67 @@ static esp_err_t handle_app_js(httpd_req_t *req)
     return serve_file(req, FS_BASE_PATH "/script.js", "application/javascript");
 }
 
+
+/**
+ * GET /ws — WebSocket upgrade endpoint.
+ *
+ * Two compile paths depending on CONFIG_HTTPD_WS_SUPPORT:
+ *
+ *   Enabled  (sdkconfig: CONFIG_HTTPD_WS_SUPPORT=y)
+ *     ESP-IDF upgrades the HTTP GET to a real WebSocket connection.
+ *     handle_ws() is called for both the initial handshake (HTTP_GET) and
+ *     every inbound data frame.  httpd_uri_t::is_websocket must be true.
+ *
+ *   Disabled (default / not set)
+ *     The WS types and functions do not exist in this IDF build.
+ *     handle_ws() compiles as a plain HTTP GET handler that returns a
+ *     human-readable error, so the route table is valid and the serial log
+ *     tells you exactly what to fix.
+ *
+ * To enable: add  CONFIG_HTTPD_WS_SUPPORT=y  to sdkconfig.defaults (or set
+ * it via `pio run -t menuconfig` -> Component config -> HTTP Server).
+ */
+static esp_err_t handle_ws(httpd_req_t *req)
+{
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    if (req->method == HTTP_GET) {
+        /* Handshake phase -- ESP-IDF WS layer handles the 101 upgrade. */
+        ESP_LOGI(TAG, "WS: handshake accepted");
+        return ESP_OK;
+    }
+    /* Data frame phase.  Two-pass receive: first call measures length,
+     * second call fills the payload buffer. */
+    httpd_ws_frame_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.type = HTTPD_WS_TYPE_TEXT;
+
+    esp_err_t ret = httpd_ws_recv_frame(req, &pkt, 0);   /* measure */
+    if (ret != ESP_OK) return ret;
+
+    if (pkt.len) {
+        pkt.payload = malloc(pkt.len + 1);
+        if (!pkt.payload) return ESP_ERR_NO_MEM;
+        ret = httpd_ws_recv_frame(req, &pkt, pkt.len);   /* read */
+        if (ret == ESP_OK) {
+            ((char *)pkt.payload)[pkt.len] = '\0';
+            ESP_LOGD(TAG, "WS rx: %s", (char *)pkt.payload);
+            /* TODO: forward to robot command handler */
+        }
+        free(pkt.payload);
+    }
+    return ret;
+#else
+    /* CONFIG_HTTPD_WS_SUPPORT is not enabled.  Log once so the serial
+     * monitor makes the problem immediately obvious. */
+    ESP_LOGW(TAG, "WS: CONFIG_HTTPD_WS_SUPPORT not enabled -- "
+                  "add it to sdkconfig.defaults to activate WebSocket support");
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "WebSocket support not compiled in. "
+                            "Enable CONFIG_HTTPD_WS_SUPPORT in sdkconfig.");
+    return ESP_OK;
+#endif
+}
+
 static httpd_handle_t s_app_httpd = NULL;  /* app server (STA mode) */
 
 /**
@@ -722,12 +852,16 @@ void app_server_start(void)
         { .uri = "/",            .method = HTTP_GET, .handler = handle_app_root },
         { .uri = "/style.css",   .method = HTTP_GET, .handler = handle_app_css  },
         { .uri = "/script.js",   .method = HTTP_GET, .handler = handle_app_js   },
-        { .uri = "/ws",          .method = HTTP_GET, .handler = handle_app_root },
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+        { .uri = "/ws", .method = HTTP_GET, .handler = handle_ws, .is_websocket = true },
+#else
+        /* WS support disabled -- register as plain GET so the route exists
+         * and handle_ws() can log a helpful error to the serial monitor. */
+        { .uri = "/ws", .method = HTTP_GET, .handler = handle_ws },
+#endif
         /* Silently discard favicon requests rather than logging a 404. */
         { .uri = "/favicon.ico", .method = HTTP_GET, .handler = handle_favicon  },
     };
-    cfg.uri_match_fn = NULL;  /* exact match only for app server */
-
     for (int i = 0; i < (int)(sizeof(app_routes)/sizeof(app_routes[0])); i++) {
         httpd_register_uri_handler(s_app_httpd, &app_routes[i]);
     }
@@ -889,6 +1023,10 @@ static void event_task(void *arg)
             s_cfg.on_state_change(ev.state, s_cfg.cb_ctx);
         }
         if (ev.state == WIFI_MANAGER_STATE_STA_CONNECTED) {
+            /* Stop the captive-portal server before starting the app server.
+             * Both want port 80; if the portal is still running httpd_start()
+             * will silently bind a different port and index.html will 404. */
+            http_server_stop();
             app_server_start();  /* start robot UI on port 80 */
             if (s_cfg.on_connected) {
                 s_cfg.on_connected(ev.ssid, ev.ip, s_cfg.cb_ctx);
@@ -964,7 +1102,9 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
             pdMS_TO_TICKS(10000));
 
         if (bits & EVT_STA_CONNECTED) {
-            app_server_start();  /* start robot UI on port 80 */
+            /* app_server_start() is called by event_task when it dequeues
+             * WIFI_MANAGER_STATE_STA_CONNECTED -- do not call it here too.
+             * event_task also stops the portal server first (port 80 fix). */
             return ESP_OK;  /* connected -- skip portal entirely */
         }
 
