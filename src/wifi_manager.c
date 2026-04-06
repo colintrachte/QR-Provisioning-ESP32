@@ -59,7 +59,7 @@ static const char *TAG = "wifi_mgr";
  *  LITTLEFS / FILE SERVING
  * =======================================================================*/
 #include "esp_vfs.h"
-#include "esp_spiffs.h"
+#include "esp_littlefs.h"
 #include <dirent.h>
 
 #define FS_BASE_PATH  "/littlefs"
@@ -583,18 +583,11 @@ static void fs_mount(void)
     static bool s_mounted = false;
     if (s_mounted) return;
 
-    esp_vfs_spiffs_conf_t cfg = {
+    esp_vfs_littlefs_conf_t cfg = {
         .base_path              = FS_BASE_PATH,
         .partition_label        = FS_PARTITION,
-        .max_files              = 8,
-        /* format_if_mount_failed = true: if the partition contains
-         * garbage (never been formatted, or flashed with wrong image)
-         * the driver formats it automatically.  The web files will still
-         * be missing until uploadfs runs, but the mount itself succeeds
-         * so serve_file() returns clean 404s rather than crashing. */
-        .format_if_mount_failed = true,
     };
-    esp_err_t err = esp_vfs_spiffs_register(&cfg);
+    esp_err_t err = esp_vfs_littlefs_register(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(err));
         ESP_LOGE(TAG, "Partition 'storage' at 0x520000 may be missing or corrupt.");
