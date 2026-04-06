@@ -271,172 +271,73 @@ static void dns_task(void *arg)
 }
 
 /* =======================================================================
- *  PORTAL HTML / CSS / JS
+ *  PORTAL FILE SERVING
  *
- *  Inlined as a C string literal -- no filesystem required.
- *  The JS uses a poll-based scan (fetch /scan until array arrives) rather
- *  than a single blocking request, matching the non-blocking scan design
- *  in handler_scan() below.
+ *  setup.html / setup.css / setup.js live on LittleFS and are served
+ *  directly by the HTTP handlers below.  No HTML/CSS/JS is inlined in
+ *  this file -- edit the web/ source files instead.
+ *
+ *  LittleFS mount point: "/littlefs"  (configured in partitions.csv +
+ *  menuconfig).  Files are stored at the root of that partition, so the
+ *  on-disk paths are:
+ *      /littlefs/setup.html
+ *      /littlefs/setup.css
+ *      /littlefs/setup.js
  * =======================================================================*/
-static const char PORTAL_HTML[] =
-"<!DOCTYPE html><html lang='en'><head>"
-"<meta charset='UTF-8'>"
-"<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
-"<title>WiFi Setup</title>"
-"<style>"
-"*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}"
-"body{font-family:system-ui,sans-serif;background:#0f1117;color:#e4e6f0;"
-"min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px}"
-".card{width:100%;max-width:380px;background:#1c1f2b;border:1px solid #2e3347;"
-"border-radius:14px;padding:32px 28px}"
-".logo{font-size:2rem;text-align:center;margin-bottom:6px}"
-"h1{font-size:1.1rem;font-weight:700;text-align:center;letter-spacing:.04em;"
-"text-transform:uppercase;margin-bottom:4px}"
-".subtitle{font-size:.78rem;color:#4a4f6a;text-align:center;margin-bottom:24px}"
-".section-label{font-size:.72rem;font-weight:600;text-transform:uppercase;"
-"letter-spacing:.05em;color:#4a4f6a;margin-bottom:8px}"
-"#network-list{display:flex;flex-direction:column;gap:6px;margin-bottom:20px;"
-"max-height:220px;overflow-y:auto}"
-".network-btn{display:flex;align-items:center;justify-content:space-between;"
-"padding:10px 12px;background:#0f1117;border:1px solid #2e3347;border-radius:8px;"
-"color:#e4e6f0;font-size:.9rem;cursor:pointer;text-align:left;"
-"transition:border-color .15s,background .15s;width:100%;font-family:inherit}"
-".network-btn:hover,.network-btn.selected{border-color:#3b82f6;background:#13172a}"
-".network-name{font-weight:500}"
-".network-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}"
-".signal{font-size:.8rem;color:#4a4f6a}"
-".scan-status{font-size:.78rem;color:#4a4f6a;text-align:center;padding:12px 0}"
-".rescan-btn{background:none;border:1px solid #2e3347;border-radius:6px;"
-"color:#4a4f6a;font-size:.72rem;font-family:inherit;padding:4px 10px;"
-"cursor:pointer;margin-left:8px;transition:border-color .15s,color .15s}"
-".rescan-btn:hover{border-color:#3b82f6;color:#e4e6f0}"
-"label{display:block;font-size:.72rem;font-weight:600;text-transform:uppercase;"
-"letter-spacing:.05em;color:#4a4f6a;margin-bottom:6px}"
-"input[type=text],input[type=password]{width:100%;padding:10px 12px;"
-"background:#0f1117;border:1px solid #2e3347;border-radius:8px;color:#e4e6f0;"
-"font-size:1rem;font-family:inherit;outline:none;transition:border-color .15s;"
-"margin-bottom:16px}"
-"input:focus{border-color:#3b82f6}"
-".pass-wrap{position:relative;margin-bottom:24px}"
-".pass-wrap input{margin-bottom:0;padding-right:44px}"
-".toggle-pass{position:absolute;right:12px;top:50%;transform:translateY(-50%);"
-"background:none;border:none;color:#4a4f6a;cursor:pointer;font-size:1rem;padding:4px}"
-".toggle-pass:hover{color:#e4e6f0}"
-"button[type=submit]{width:100%;padding:12px;background:#3b82f6;color:#fff;"
-"border:none;border-radius:8px;font-size:1rem;font-weight:600;font-family:inherit;"
-"cursor:pointer;transition:background .15s,opacity .15s}"
-"button[type=submit]:hover{background:#2563eb}"
-"button[type=submit]:disabled{opacity:.5;cursor:default}"
-".status{margin-top:14px;font-size:.8rem;text-align:center;color:#4a4f6a;min-height:1.2em}"
-".status.error{color:#ef4444}"
-".status.ok{color:#4ade80}"
-".hint{margin-top:22px;padding-top:18px;border-top:1px solid #2e3347;"
-"font-size:.72rem;color:#4a4f6a;text-align:center;line-height:1.7}"
-".hint strong{color:#e4e6f0}"
-"</style></head><body><div class='card'>"
-"<div class='logo'>&#128246;</div>"
-"<h1>WiFi Setup</h1>"
-"<p class='subtitle'>Connect this device to your network</p>"
-"<p class='section-label'>Available networks"
-"<button class='rescan-btn' onclick='startScan()'>&#8635; Rescan</button></p>"
-"<div id='network-list'><p class='scan-status'>Scanning&hellip;</p></div>"
-"<form id='setup-form'>"
-"<label for='ssid'>Network name</label>"
-"<input type='text' id='ssid' name='ssid' placeholder='Or type manually'"
-" autocomplete='off' autocorrect='off' autocapitalize='none' spellcheck='false' required>"
-"<label for='pass'>Password</label>"
-"<div class='pass-wrap'>"
-"<input type='password' id='pass' name='pass' placeholder='Leave blank if open network'>"
-"<button type='button' class='toggle-pass' aria-label='Show/hide password'>&#128065;</button>"
-"</div>"
-"<button type='submit' id='submit-btn'>Save &amp; Connect</button>"
-"<p class='status' id='status'></p>"
-"</form>"
-"<p class='hint'>After saving, the device will reboot and join your network.<br>"
-"To reconfigure: hold BOOT 3&nbsp;s at power-up.</p>"
-"</div><script>"
 
-/* -- Helpers -- */
-"function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}"
-"function signalBars(q){"
-"if(q>80)return'\u2582\u2584\u2586\u2588';"
-"if(q>60)return'\u2582\u2584\u2586\xb7';"
-"if(q>40)return'\u2582\u2584\xb7\xb7';"
-"return'\u2582\xb7\xb7\xb7';}"
+#include "esp_spiffs.h"
 
-/* -- Network list -- */
-"function renderNetworks(networks){"
-"var listEl=document.getElementById('network-list');"
-"listEl.innerHTML='';"
-"if(!networks||!networks.length){"
-"listEl.innerHTML='<p class=\"scan-status\">No networks found."
-" <button class=\"rescan-btn\" onclick=\"startScan()\">Rescan</button></p>';return;}"
-"networks.sort(function(a,b){return b.quality-a.quality;});"
-"networks.forEach(function(net){"
-"var btn=document.createElement('button');"
-"btn.type='button';btn.className='network-btn';"
-"btn.innerHTML="
-"'<span class=\"network-name\">'+escHtml(net.ssid)+'</span>'"
-"+'<span class=\"network-meta\">'"
-"+'<span class=\"signal\">'+signalBars(net.quality)+' '+net.quality+'%</span>'"
-"+(net.secure?'<span>&#128274;</span>':'')+'</span>';"
-"btn.addEventListener('click',function(){"
-"listEl.querySelectorAll('.network-btn').forEach(function(b){b.classList.remove('selected');});"
-"btn.classList.add('selected');"
-"document.getElementById('ssid').value=net.ssid;"
-"if(net.secure)document.getElementById('pass').focus();"
-"else document.getElementById('pass').value='';});"
-"listEl.appendChild(btn);});}"
+#define FS_BASE_PATH  "/littlefs"
+#define FS_PARTITION  "littlefs"
 
-/* -- Scan: poll GET /scan until server returns an array -- */
-"var scanPoll=null;"
-"function pollScan(){"
-"fetch('/scan')"
-".then(function(r){return r.ok?r.json():Promise.reject(r.status);})"
-".then(function(d){"
-"if(Array.isArray(d)){renderNetworks(d);}"
-"else{scanPoll=setTimeout(pollScan,1500);}})" // Changed ); to })
-".catch(function(){scanPoll=setTimeout(pollScan,3000);});}"
-"function startScan(){"
-"document.getElementById('network-list').innerHTML='<p class=\"scan-status\">Scanning&hellip;</p>';"
-"clearTimeout(scanPoll);"
-"pollScan();}"
+/* Maximum single read from LittleFS per send chunk.
+ * 1 kB fits comfortably in task stack; keeps I/O latency low. */
+#define FS_CHUNK_SIZE 1024
 
-/* -- Password toggle -- */
-"document.querySelector('.toggle-pass').addEventListener('click',function(){"
-"var p=document.getElementById('pass');"
-"p.type=p.type==='password'?'text':'password';});"
+/**
+ * serve_file() — open a LittleFS file and stream it to the HTTP client.
+ *
+ * @param req        The httpd request to respond to.
+ * @param path       Absolute path on the VFS, e.g. "/littlefs/setup.html".
+ * @param mime_type  Content-Type header value.
+ *
+ * Streams in FS_CHUNK_SIZE chunks so large files don't require a single
+ * heap allocation.  Returns ESP_OK on success or after sending a 404/500.
+ */
+static esp_err_t serve_file(httpd_req_t *req,
+                             const char  *path,
+                             const char  *mime_type)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "serve_file: not found: %s", path);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_OK;
+    }
 
-/* -- Save flow -- borrowed from the 8266 project:
- *   POST /save -> device saves to NVS and reboots.
- *   The AP disappears, the fetch() catch fires, and we redirect
- *   the user to the device's normal hostname. No /connect-status
- *   polling required -- the reboot is the connection attempt. -- */
-"document.getElementById('setup-form').addEventListener('submit',function(e){"
-"e.preventDefault();"
-"var ssid=document.getElementById('ssid').value.trim();"
-"if(!ssid)return;"
-"var statusEl=document.getElementById('status');"
-"var btn=document.getElementById('submit-btn');"
-"btn.disabled=true;btn.textContent='Saving...';"
-"statusEl.textContent='Sending credentials...';"
-"statusEl.className='status';"
-"var body='ssid='+encodeURIComponent(ssid)"
-"+'&pass='+encodeURIComponent(document.getElementById('pass').value);"
-"fetch('/save',{method:'POST',"
-"headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})"
-".then(function(){"
-"statusEl.textContent='Saved! Device is joining your network...';"
-"statusEl.className='status ok';"
-"if(response.ok) {window.location.href = '/success';}})"
-".catch(function(){"
-/* fetch error = device rebooted and AP is gone = expected success path */
-"statusEl.textContent='Device rebooting -- check your normal WiFi in a moment.';"
-"statusEl.className='status ok';});});"
+    httpd_resp_set_type(req, mime_type);
 
-/* -- Boot -- */
-"startScan();"
-"</script></html>";
+    char *buf = malloc(FS_CHUNK_SIZE);
+    if (!buf) {
+        fclose(f);
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+
+    size_t n;
+    while ((n = fread(buf, 1, FS_CHUNK_SIZE, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
+            ESP_LOGW(TAG, "serve_file: chunk send failed for %s", path);
+            break;
+        }
+    }
+    /* Signal end of chunked transfer. */
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    free(buf);
+    fclose(f);
+    return ESP_OK;
+}
 
 /* =======================================================================
  *  HELPERS
@@ -491,20 +392,22 @@ static void extract_field(const char *body, const char *key,
  *  HTTP HANDLERS -- application endpoints
  * =======================================================================*/
 
-/** GET / -- serve the portal page. */
+/** GET / — serve the provisioning portal HTML from LittleFS. */
 static esp_err_t handle_root(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
+    return serve_file(req, FS_BASE_PATH "/setup.html", "text/html");
 }
-/* Handler for a simple success page */
-esp_err_t handle_success(httpd_req_t *req)
+
+/** GET /setup.css — serve the portal stylesheet from LittleFS. */
+static esp_err_t handle_setup_css(httpd_req_t *req)
 {
-    const char* resp = "<html><body><h1>Connection Successful!</h1>"
-                       "<p>The device is now online. You can close this page.</p>"
-                       "</body></html>";
-    return httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    return serve_file(req, FS_BASE_PATH "/setup.css", "text/css");
+}
+
+/** GET /setup.js — serve the portal script from LittleFS. */
+static esp_err_t handle_setup_js(httpd_req_t *req)
+{
+    return serve_file(req, FS_BASE_PATH "/setup.js", "application/javascript");
 }
 /**
  * GET /scan -- return cached WiFi scan results as a JSON array.
@@ -689,6 +592,24 @@ static esp_err_t handle_captive_redirect(httpd_req_t *req)
 
 static void http_server_start(void)
 {
+    /* Mount the LittleFS partition that holds the portal web files.
+     * format_if_mount_failed=false: if the partition is blank (fresh board),
+     * log a warning and continue -- the root handler will return 404 until
+     * files are uploaded via "pio run -t uploadfs". */
+    esp_vfs_spiffs_conf_t fs_conf = {
+        .base_path              = FS_BASE_PATH,
+        .partition_label        = FS_PARTITION,
+        .max_files              = 5,
+        .format_if_mount_failed = false,
+    };
+    esp_err_t fs_err = esp_vfs_spiffs_register(&fs_conf);
+    if (fs_err != ESP_OK) {
+        ESP_LOGW(TAG, "LittleFS mount failed (%s) -- portal files unavailable",
+                 esp_err_to_name(fs_err));
+    } else {
+        ESP_LOGI(TAG, "LittleFS mounted at %s", FS_BASE_PATH);
+    }
+
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 20;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;
@@ -702,9 +623,10 @@ static void http_server_start(void)
      * All registered before captive-probe paths to guarantee priority. */
     static const httpd_uri_t routes[] = {
         {.uri="/",               .method=HTTP_GET,  .handler=handle_root           },
+        {.uri="/setup.css",      .method=HTTP_GET,  .handler=handle_setup_css      },
+        {.uri="/setup.js",       .method=HTTP_GET,  .handler=handle_setup_js       },
         {.uri="/scan",           .method=HTTP_GET,  .handler=handle_scan           },
         {.uri="/save",           .method=HTTP_POST, .handler=handle_save           },
-        {.uri="/success",        .method=HTTP_GET,  .handler=handle_success          },
 
         /* Windows 10/11 -- GET and HEAD both required */
         {.uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_probe_win_modern},

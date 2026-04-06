@@ -3,8 +3,7 @@
 WiFi provisioning firmware for the **Heltec WiFi LoRa 32 V3** (ESP32-S3).
 
 Pure ESP-IDF 5.x — no Arduino, no Espressif provisioning app, no BLE.
-Connect via browser on your phone. No typing if your camera app supports
-Wi-Fi QR codes.
+Connect via browser on your phone.
 
 ---
 
@@ -32,45 +31,22 @@ portal starts.
 
 ## Hardware
 
-| Board       | Heltec WiFi LoRa 32 V3 (HTIT-WB32LA)  |
-|-------------|----------------------------------------|
-| MCU         | ESP32-S3FN8 @ 240 MHz dual-core LX7   |
-| Display     | 0.96" SSD1306 OLED 128×64 I2C         |
-| Flash       | 8 MB                                  |
-| PSRAM       | None (V3) / 2MB (V4)                  |
+| Board   | Heltec WiFi LoRa 32 V3 (HTIT-WB32LA) |
+| ------- | ------------------------------------ |
+| MCU     | ESP32-S3FN8 @ 240 MHz dual-core LX7  |
+| Display | 0.96" SSD1306 OLED 128×64 I2C        |
+| Flash   | 8 MB                                 |
+| PSRAM   | None (V3) / 2MB (V4)                 |
 
 ### Pin assignments used
 
-| Function     | GPIO |
-|--------------|------|
-| OLED SDA     | 17   |
-| OLED SCL     | 18   |
-| OLED RST     | 21   |
-| Vext power   | 36   |
-| User button  | 0    |
-
----
-
-## Project structure
-
-```
-robot-provisioning/
-├── platformio.ini          PlatformIO project (ESP-IDF framework)
-├── CMakeLists.txt          Root cmake
-├── sdkconfig.defaults      ESP32-S3 tuned SDK settings
-├── components/
-│   └── qr_code_generator/  Wraps nayuki/QR-Code-generator C library
-│       ├── CMakeLists.txt
-│       ├── nayuki/         ← git clone goes here (see Setup)
-│       └── stub/           Compile stub used before submodule is cloned
-└── main/
-    ├── CMakeLists.txt
-    ├── main.c              app_main — entry point, main loop
-    ├── display.h / .c      SSD1306 driver: shadow buffer + dirty-page flush
-    ├── qr_gen.h / .c       QR code generation (WIFI URI + URL)
-    ├── wifi_prov.h / .c    SoftAP + DNS + HTTP captive portal
-    └── prov_ui.h / .c      Display state machine, dual-QR cycling
-```
+| Function    | GPIO |
+| ----------- | ---- |
+| OLED SDA    | 17   |
+| OLED SCL    | 18   |
+| OLED RST    | 21   |
+| Vext power  | 36   |
+| User button | 0    |
 
 ---
 
@@ -144,7 +120,7 @@ Display shows:
   │─────────────────│
   │ Heltec V3 S3   │
   └─────────────────┘
-  
+
   → "Connecting..." (tries NVS — empty on first boot)
   → AP starts → WIFI QR appears
 ```
@@ -181,13 +157,6 @@ The SSD1306 has its own GDDRAM. Once pixels are written they stay up with
 - `display_flush_page(n)` for surgical single-page updates.
 - No refresh timer, no display task. The hardware holds the image.
 
-### QR cycling
-
-When the portal is active and no phone is connected, `prov_ui_tick()` (called
-at 10Hz from the main loop) switches between the two QR codes every 5 seconds.
-Only pages 0–6 are redrawn on a switch; the status bar (page 7) is left alone.
-Cycling stops the moment a phone connects.
-
 ---
 
 ## Extending for robot application
@@ -209,20 +178,9 @@ success screen.
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Blank display | Vext not powered | Check GPIO36 init; ensure `display_init()` called before any draw |
-| Garbage on display | Reset not asserted | GPIO21 RST pulse required; `display_init()` handles this |
-| QR not scannable | Too small / no quiet zone | Ensure scale≥2; quiet zone is rendered automatically |
-| Captive portal doesn't pop up | OS-dependent behaviour | Use the URL QR (second QR) to open manually |
-| `idf_component_register` error | nayuki submodule missing | `cd components/qr_code_generator && git clone ... nayuki` |
-| Can't connect after password entry | Wrong password / SSID | Check router; hold USER button 3s to re-provision |
-| I2C timeout in display_init | Pull-ups / wiring | Internal pull-ups enabled in driver; check for short on SDA/SCL |
-
----
-
 ## License
 
 MIT. See individual component licenses:
+
 - nayuki/QR-Code-generator: MIT
 - ESP-IDF components: Apache 2.0
