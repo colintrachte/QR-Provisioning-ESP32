@@ -1,10 +1,16 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-# -----------------------------------------
-nvs,      data, nvs,     ,        0x6000,
-otadata,  data, ota,     ,        0x2000,
-phy_init, data, phy,     ,        0x1000,
-# Two large 2.5MB partitions for Over-the-Air updates
-ota_0,    app,  ota_0,   ,        2560K,
-ota_1,    app,  ota_1,   ,        2560K,
-# Large 2MB storage area for logs/calibration
-storage,  data, spiffs,  ,        2048K,
+# Partition table for Heltec WiFi LoRa 32 V3 (ESP32-S3, 8 MB flash)
+#
+# Offsets are explicit so `pio run -t uploadfs` targets the right region
+# regardless of ESP-IDF version or alignment assumptions.
+#
+# storage partition uses subtype "spiffs" — this is correct for LittleFS too.
+# Both filesystems share subtype ID 0x82; the firmware selects LittleFS via
+# esp_vfs_spiffs_register() with format_if_mount_failed=false.
+#
+# Name,     Type,  SubType,  Offset,      Size,    Flags
+nvs,         data,  nvs,      0x9000,      0x6000,
+otadata,     data,  ota,      0xf000,      0x2000,
+phy_init,    data,  phy,      0x11000,     0x1000,
+ota_0,       app,   ota_0,    0x20000,     2560K,
+ota_1,       app,   ota_1,    0x2a0000,    2560K,
+storage,     data,  spiffs,   0x520000,    2048K,

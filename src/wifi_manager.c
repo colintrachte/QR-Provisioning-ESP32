@@ -51,8 +51,49 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
+#include "cJSON.h"
 
 static const char *TAG = "wifi_mgr";
+
+/* =======================================================================
+ *  LITTLEFS / FILE SERVING
+ * =======================================================================*/
+#include "esp_vfs.h"
+#include "esp_spiffs.h"
+#include <dirent.h>
+
+#define FS_BASE_PATH  "/littlefs"
+#define FS_PARTITION  "storage"
+#define FS_CHUNK_SIZE 1024
+
+static esp_err_t serve_file(httpd_req_t *req,
+                             const char  *path,
+                             const char  *mime_type)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "serve_file: not found: %s", path);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, mime_type);
+    char *buf = malloc(FS_CHUNK_SIZE);
+    if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
+    size_t n;
+    bool send_ok = true;
+    while (send_ok && (n = fread(buf, 1, FS_CHUNK_SIZE, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
+            ESP_LOGW(TAG, "serve_file: chunk send failed: %s", path);
+            send_ok = false;
+        }
+    }
+    /* Always terminate chunked transfer so the browser does not hang,
+     * even when a mid-stream send error occurred. */
+    httpd_resp_send_chunk(req, NULL, 0);
+    free(buf);
+    fclose(f);
+    return ESP_OK;
+}
 
 /* -- NVS namespace / keys -----------------------------------------------*/
 #define NVS_NAMESPACE  "wifi_mgr"
@@ -178,12 +219,15 @@ static void scan_task(void *arg)
                             : rssi >= -40  ? 100
                             : 2 * (rssi + 100);
 
-                /* JSON-escape the SSID (only ' " ' and ' \ ' need escaping). */
+                /* JSON-escape the SSID: only '"'  and '\\' need escaping.
+                 * Guard si < 31 so an escape+char pair at the last slot
+                 * (bytes 31+32) still leaves room for the null at byte 32,
+                 * which is within the 33-byte ssid field. */
                 int si = 0;
-                for (int j = 0; recs[i].ssid[j] && j < 32 && si < 63; j++) {
+                for (int j = 0; recs[i].ssid[j] && j < 32 && si < 31; j++) {
                     char c = (char)recs[i].ssid[j];
                     if (c == '"' || c == '\\') s_scan_aps[s_scan_count].ssid[si++] = '\\';
-                    s_scan_aps[s_scan_count].ssid[si++] = c;
+                    if (si < 32) s_scan_aps[s_scan_count].ssid[si++] = c;
                 }
                 s_scan_aps[s_scan_count].ssid[si] = '\0';
                 s_scan_aps[s_scan_count].quality   = quality;
@@ -256,7 +300,13 @@ static void dns_task(void *arg)
         resp[6] = 0x00; resp[7] = 0x01;           /* ANCOUNT = 1                 */
         resp[8] = resp[9] = resp[10] = resp[11] = 0x00; /* NSCOUNT/ARCOUNT = 0   */
 
+        /* A-record suffix is exactly 16 bytes.  Verify it fits before
+         * appending so we cannot write past the end of resp[512]. */
         int rlen = len;
+        if (rlen + 16 > (int)sizeof(resp)) {
+            ESP_LOGW(TAG, "dns_task: query too large (%d), dropping", len);
+            continue;
+        }
         resp[rlen++] = 0xC0; resp[rlen++] = 0x0C; /* Name: pointer to offset 12 */
         resp[rlen++] = 0x00; resp[rlen++] = 0x01; /* Type A                      */
         resp[rlen++] = 0x00; resp[rlen++] = 0x01; /* Class IN                    */
@@ -271,155 +321,37 @@ static void dns_task(void *arg)
 }
 
 /* =======================================================================
- *  PORTAL FILE SERVING
+ *  PORTAL HTML / CSS / JS
  *
- *  setup.html / setup.css / setup.js live on LittleFS and are served
- *  directly by the HTTP handlers below.  No HTML/CSS/JS is inlined in
- *  this file -- edit the web/ source files instead.
- *
- *  LittleFS mount point: "/littlefs"  (configured in partitions.csv +
- *  menuconfig).  Files are stored at the root of that partition, so the
- *  on-disk paths are:
- *      /littlefs/setup.html
- *      /littlefs/setup.css
- *      /littlefs/setup.js
+ *  Inlined as a C string literal -- no filesystem required.
+ *  The JS uses a poll-based scan (fetch /scan until array arrives) rather
+ *  than a single blocking request, matching the non-blocking scan design
+ *  in handler_scan() below.
  * =======================================================================*/
-
-#include "esp_spiffs.h"
-
-#define FS_BASE_PATH  "/littlefs"
-#define FS_PARTITION  "littlefs"
-
-/* Maximum single read from LittleFS per send chunk.
- * 1 kB fits comfortably in task stack; keeps I/O latency low. */
-#define FS_CHUNK_SIZE 1024
-
-/**
- * serve_file() — open a LittleFS file and stream it to the HTTP client.
- *
- * @param req        The httpd request to respond to.
- * @param path       Absolute path on the VFS, e.g. "/littlefs/setup.html".
- * @param mime_type  Content-Type header value.
- *
- * Streams in FS_CHUNK_SIZE chunks so large files don't require a single
- * heap allocation.  Returns ESP_OK on success or after sending a 404/500.
+/* ── Portal HTTP handlers ────────────────────────────────────────────────────
+ * setup.html / setup.css / setup.js are served from LittleFS.
+ * Edit the files in data/ and run `pio run -t uploadfs` to update them
+ * without reflashing the firmware.
  */
-static esp_err_t serve_file(httpd_req_t *req,
-                             const char  *path,
-                             const char  *mime_type)
-{
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        ESP_LOGW(TAG, "serve_file: not found: %s", path);
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-        return ESP_OK;
-    }
 
-    httpd_resp_set_type(req, mime_type);
-
-    char *buf = malloc(FS_CHUNK_SIZE);
-    if (!buf) {
-        fclose(f);
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-
-    size_t n;
-    while ((n = fread(buf, 1, FS_CHUNK_SIZE, f)) > 0) {
-        if (httpd_resp_send_chunk(req, buf, (ssize_t)n) != ESP_OK) {
-            ESP_LOGW(TAG, "serve_file: chunk send failed for %s", path);
-            break;
-        }
-    }
-    /* Signal end of chunked transfer. */
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    free(buf);
-    fclose(f);
-    return ESP_OK;
-}
-
-/* =======================================================================
- *  HELPERS
- * =======================================================================*/
-
-/**
- * Decode a percent-encoded URL query value into dst.
- * '+' is decoded as space (application/x-www-form-urlencoded convention).
- */
-static void url_decode(const char *src, char *dst, int dst_size)
-{
-    int out = 0;
-    for (int i = 0; src[i] && out < dst_size - 1; i++) {
-        if (src[i] == '%' && src[i+1] && src[i+2]) {
-            char hex[3] = {src[i+1], src[i+2], '\0'};
-            dst[out++] = (char)strtol(hex, NULL, 16);
-            i += 2;
-        } else if (src[i] == '+') {
-            dst[out++] = ' ';
-        } else {
-            dst[out++] = src[i];
-        }
-    }
-    dst[out] = '\0';
-}
-
-/**
- * Extract the value of a URL-encoded form field from a raw POST body.
- * e.g. extract_field("ssid=Foo&pass=Bar", "ssid", out, sizeof(out))
- * writes "Foo" into out.
- */
-static void extract_field(const char *body, const char *key,
-                           char *out, int out_size)
-{
-    char search[32];
-    snprintf(search, sizeof(search), "%s=", key);
-    const char *p = strstr(body, search);
-    if (!p) { out[0] = '\0'; return; }
-    p += strlen(search);
-
-    const char *end = strchr(p, '&');
-    int len = end ? (int)(end - p) : (int)strlen(p);
-    if (len >= out_size) len = out_size - 1;
-
-    char raw[256] = {0};
-    if (len > (int)sizeof(raw) - 1) len = (int)sizeof(raw) - 1;
-    memcpy(raw, p, len);
-    url_decode(raw, out, out_size);
-}
-
-/* =======================================================================
- *  HTTP HANDLERS -- application endpoints
- * =======================================================================*/
-
-/** GET / — serve the provisioning portal HTML from LittleFS. */
+/** GET /  — provisioning portal page. */
 static esp_err_t handle_root(httpd_req_t *req)
 {
     return serve_file(req, FS_BASE_PATH "/setup.html", "text/html");
 }
 
-/** GET /setup.css — serve the portal stylesheet from LittleFS. */
+/** GET /setup.css */
 static esp_err_t handle_setup_css(httpd_req_t *req)
 {
     return serve_file(req, FS_BASE_PATH "/setup.css", "text/css");
 }
 
-/** GET /setup.js — serve the portal script from LittleFS. */
+/** GET /setup.js */
 static esp_err_t handle_setup_js(httpd_req_t *req)
 {
     return serve_file(req, FS_BASE_PATH "/setup.js", "application/javascript");
 }
-/**
- * GET /scan -- return cached WiFi scan results as a JSON array.
- *
- * Results are populated by scan_task(), which runs a blocking scan on its
- * own FreeRTOS task every SCAN_INTERVAL_MS milliseconds.  This handler
- * never touches the WiFi driver -- it only reads the shared cache under a
- * mutex, so it is safe to call from the httpd task at any time.
- *
- * Returns {"status":"scanning"} until the first scan completes.
- * Returns a JSON array of {ssid, quality, secure} objects thereafter.
- */
+
 static esp_err_t handle_scan(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -430,32 +362,34 @@ static esp_err_t handle_scan(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Lock, serialise the cache to JSON, unlock. */
+    /* Build JSON with cJSON -- handles allocation and escaping safely.
+     * cJSON is bundled with ESP-IDF; no extra dependency needed. */
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
 
-    /* Upper bound: each entry is at most ~90 bytes + 2 for [] */
-    char *json = malloc(s_scan_count * 90 + 4);
-    if (!json) {
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) {
         xSemaphoreGive(s_scan_mutex);
         httpd_resp_send_500(req);
         return ESP_OK;
     }
-
-    int pos = 0;
-    pos += sprintf(json + pos, "[");
     for (int i = 0; i < s_scan_count; i++) {
-        pos += sprintf(json + pos,
-            "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
-            i ? "," : "",
-            s_scan_aps[i].ssid,
-            s_scan_aps[i].quality,
-            s_scan_aps[i].secure ? "true" : "false");
+        cJSON *obj = cJSON_CreateObject();
+        if (!obj) break;
+        cJSON_AddStringToObject(obj, "ssid",    s_scan_aps[i].ssid);
+        cJSON_AddNumberToObject(obj, "quality", s_scan_aps[i].quality);
+        cJSON_AddBoolToObject  (obj, "secure",  s_scan_aps[i].secure);
+        cJSON_AddItemToArray(arr, obj);
     }
-    pos += sprintf(json + pos, "]");
-
     xSemaphoreGive(s_scan_mutex);
 
-    httpd_resp_send(req, json, pos);
+    char *json = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+
+    if (!json) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, json);
     free(json);
     return ESP_OK;
 }
@@ -478,6 +412,54 @@ static esp_err_t handle_scan(httpd_req_t *req)
  * Body: application/x-www-form-urlencoded  ssid=<val>&pass=<val>
  * Response: HTTP 200 plain text, then device reboots.
  */
+/* ======================================================================
+ *  FORM FIELD HELPERS
+ * ======================================================================*/
+
+static void url_decode(const char *src, char *dst, int dst_size)
+{
+    int out = 0;
+    for (int i = 0; src[i] && out < dst_size - 1; i++) {
+        if (src[i] == '%' && src[i+1] && src[i+2]) {
+            char hex[3] = {src[i+1], src[i+2], '\0'};
+            dst[out++] = (char)strtol(hex, NULL, 16);
+            i += 2;
+        } else if (src[i] == '+') {
+            dst[out++] = ' ';
+        } else {
+            dst[out++] = src[i];
+        }
+    }
+    dst[out] = '\0';
+}
+
+static void extract_field(const char *body, const char *key,
+                           char *out, int out_size)
+{
+    char search[32];
+    snprintf(search, sizeof(search), "%s=", key);
+    const char *p = strstr(body, search);
+    if (!p) { out[0] = '\0'; return; }
+    p += strlen(search);
+    const char *end = strchr(p, '&');
+    int len = end ? (int)(end - p) : (int)strlen(p);
+    if (len >= out_size) len = out_size - 1;
+    char tmp[256] = {0};
+    if (len > (int)sizeof(tmp) - 1) len = (int)sizeof(tmp) - 1;
+    memcpy(tmp, p, len);
+    url_decode(tmp, out, out_size);
+}
+
+/* One-shot task: delay briefly then reboot.
+ * Spawned by handle_save() so the HTTP handler can return and lwIP
+ * can complete the TCP ACK/FIN before the radio shuts down. */
+static void reboot_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
 static esp_err_t handle_save(httpd_req_t *req)
 {
     char body[320] = {0};
@@ -514,12 +496,12 @@ static esp_err_t handle_save(httpd_req_t *req)
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_sendstr(req, "Saved. Rebooting...");
 
-    /* Short delay then reboot from a separate task so the HTTP response
-     * has time to be flushed through the TCP stack. */
-    vTaskDelay(pdMS_TO_TICKS(1200));
-    esp_restart();
-
-    return ESP_OK;  /* unreachable, but satisfies the compiler */
+    /* Reboot from a one-shot task so this handler returns immediately
+     * and lwIP can finish the TCP ACK + FIN handshake before the radio
+     * disappears.  Spawning a task lets the RTOS flush naturally instead
+     * of relying on a fixed-duration guess delay. */
+    xTaskCreate(reboot_task, "reboot", 1024, NULL, 5, NULL);
+    return ESP_OK;
 }
 
 static esp_err_t handle_probe_win_modern(httpd_req_t *req)
@@ -590,26 +572,55 @@ static esp_err_t handle_captive_redirect(httpd_req_t *req)
  *  HTTP SERVER LIFECYCLE
  * =======================================================================*/
 
-static void http_server_start(void)
+/* =======================================================================
+ *  FILESYSTEM MOUNT
+ *
+ *  Called once at the top of wifi_manager_start() so LittleFS is ready
+ *  regardless of which path (saved-credentials or portal) is taken.
+ * =======================================================================*/
+static void fs_mount(void)
 {
-    /* Mount the LittleFS partition that holds the portal web files.
-     * format_if_mount_failed=false: if the partition is blank (fresh board),
-     * log a warning and continue -- the root handler will return 404 until
-     * files are uploaded via "pio run -t uploadfs". */
-    esp_vfs_spiffs_conf_t fs_conf = {
+    static bool s_mounted = false;
+    if (s_mounted) return;
+
+    esp_vfs_spiffs_conf_t cfg = {
         .base_path              = FS_BASE_PATH,
         .partition_label        = FS_PARTITION,
-        .max_files              = 5,
-        .format_if_mount_failed = false,
+        .max_files              = 8,
+        /* format_if_mount_failed = true: if the partition contains
+         * garbage (never been formatted, or flashed with wrong image)
+         * the driver formats it automatically.  The web files will still
+         * be missing until uploadfs runs, but the mount itself succeeds
+         * so serve_file() returns clean 404s rather than crashing. */
+        .format_if_mount_failed = true,
     };
-    esp_err_t fs_err = esp_vfs_spiffs_register(&fs_conf);
-    if (fs_err != ESP_OK) {
-        ESP_LOGW(TAG, "LittleFS mount failed (%s) -- portal files unavailable",
-                 esp_err_to_name(fs_err));
+    esp_err_t err = esp_vfs_spiffs_register(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LittleFS mount failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Partition 'storage' at 0x520000 may be missing or corrupt.");
     } else {
-        ESP_LOGI(TAG, "LittleFS mounted at %s", FS_BASE_PATH);
-    }
+        ESP_LOGI(TAG, "LittleFS mounted at " FS_BASE_PATH);
+        s_mounted = true;
 
+        /* List every file in the filesystem on boot so the serial log
+         * confirms exactly what was flashed and at what VFS path.      */
+        DIR *dp = opendir(FS_BASE_PATH);
+        if (dp) {
+            struct dirent *de;
+            ESP_LOGI(TAG, "--- LittleFS contents ---");
+            while ((de = readdir(dp)) != NULL) {
+                ESP_LOGI(TAG, "  %s/%s", FS_BASE_PATH, de->d_name);
+            }
+            closedir(dp);
+            ESP_LOGI(TAG, "--- end ---");
+        } else {
+            ESP_LOGW(TAG, "opendir(" FS_BASE_PATH ") failed");
+        }
+    }
+}
+
+static void http_server_start(void)
+{
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 20;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;
@@ -622,11 +633,11 @@ static void http_server_start(void)
     /* -- Application endpoints ----------------------------------------
      * All registered before captive-probe paths to guarantee priority. */
     static const httpd_uri_t routes[] = {
-        {.uri="/",               .method=HTTP_GET,  .handler=handle_root           },
-        {.uri="/setup.css",      .method=HTTP_GET,  .handler=handle_setup_css      },
-        {.uri="/setup.js",       .method=HTTP_GET,  .handler=handle_setup_js       },
-        {.uri="/scan",           .method=HTTP_GET,  .handler=handle_scan           },
-        {.uri="/save",           .method=HTTP_POST, .handler=handle_save           },
+        {.uri="/",               .method=HTTP_GET,  .handler=handle_root       },
+        {.uri="/setup.css",      .method=HTTP_GET,  .handler=handle_setup_css  },
+        {.uri="/setup.js",       .method=HTTP_GET,  .handler=handle_setup_js   },
+        {.uri="/scan",           .method=HTTP_GET,  .handler=handle_scan       },
+        {.uri="/save",           .method=HTTP_POST, .handler=handle_save       },
 
         /* Windows 10/11 -- GET and HEAD both required */
         {.uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_probe_win_modern},
@@ -652,6 +663,91 @@ static void http_server_start(void)
     }
 
     ESP_LOGI(TAG, "HTTP server started");
+}
+
+/* ── App HTTP handlers (STA mode) ────────────────────────────────────────────
+ * Served after the device connects to the user's network.
+ * index.html / style.css / script.js live in data/ on LittleFS.
+ *
+ * WebSocket (/ws) is handled here as a plain HTTP upgrade; the actual
+ * telemetry/command logic lives in your robot application layer — wire it
+ * up by calling httpd_ws_send_frame() from wherever you produce telemetry.
+ */
+
+/** GET /favicon.ico -- return 204 No Content so browsers stop asking. */
+static esp_err_t handle_favicon(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+static esp_err_t handle_app_root(httpd_req_t *req)
+{
+    return serve_file(req, FS_BASE_PATH "/index.html", "text/html");
+}
+
+static esp_err_t handle_app_css(httpd_req_t *req)
+{
+    return serve_file(req, FS_BASE_PATH "/style.css", "text/css");
+}
+
+static esp_err_t handle_app_js(httpd_req_t *req)
+{
+    return serve_file(req, FS_BASE_PATH "/script.js", "application/javascript");
+}
+
+static httpd_handle_t s_app_httpd = NULL;  /* app server (STA mode) */
+
+/**
+ * Start the robot-control HTTP server on port 80.
+ * Called from both connection paths in wifi_manager_start() and from
+ * event_task when WIFI_MANAGER_STATE_STA_CONNECTED fires (portal path).
+ * Guarded so it is safe to call more than once.
+ */
+void app_server_start(void)
+{
+    if (s_app_httpd) return;
+
+    httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
+    cfg.server_port      = 80;
+    cfg.max_uri_handlers = 8;  /* /, css, js, ws, favicon + headroom */
+
+    if (httpd_start(&s_app_httpd, &cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "app_server_start: httpd_start failed");
+        return;
+    }
+
+    /* /ws is registered as a normal GET handler.
+     * ESP-IDF upgrades it to WebSocket automatically when
+     * CONFIG_HTTPD_WS_SUPPORT=y is set in sdkconfig.
+     * Without that Kconfig option the route still accepts the HTTP
+     * handshake; the browser's WebSocket constructor will then throw,
+     * which is the correct failure mode — set the Kconfig option to
+     * enable the full WebSocket path. */
+    static const httpd_uri_t app_routes[] = {
+        { .uri = "/",            .method = HTTP_GET, .handler = handle_app_root },
+        { .uri = "/style.css",   .method = HTTP_GET, .handler = handle_app_css  },
+        { .uri = "/script.js",   .method = HTTP_GET, .handler = handle_app_js   },
+        { .uri = "/ws",          .method = HTTP_GET, .handler = handle_app_root },
+        /* Silently discard favicon requests rather than logging a 404. */
+        { .uri = "/favicon.ico", .method = HTTP_GET, .handler = handle_favicon  },
+    };
+    cfg.uri_match_fn = NULL;  /* exact match only for app server */
+
+    for (int i = 0; i < (int)(sizeof(app_routes)/sizeof(app_routes[0])); i++) {
+        httpd_register_uri_handler(s_app_httpd, &app_routes[i]);
+    }
+
+    ESP_LOGI(TAG, "App HTTP server started on port 80");
+}
+
+void app_server_stop(void)
+{
+    if (s_app_httpd) {
+        httpd_stop(s_app_httpd);
+        s_app_httpd = NULL;
+    }
 }
 
 static void http_server_stop(void)
@@ -799,8 +895,11 @@ static void event_task(void *arg)
         if (s_cfg.on_state_change) {
             s_cfg.on_state_change(ev.state, s_cfg.cb_ctx);
         }
-        if (ev.state == WIFI_MANAGER_STATE_STA_CONNECTED && s_cfg.on_connected) {
-            s_cfg.on_connected(ev.ssid, ev.ip, s_cfg.cb_ctx);
+        if (ev.state == WIFI_MANAGER_STATE_STA_CONNECTED) {
+            app_server_start();  /* start robot UI on port 80 */
+            if (s_cfg.on_connected) {
+                s_cfg.on_connected(ev.ssid, ev.ip, s_cfg.cb_ctx);
+            }
         }
     }
 }
@@ -821,6 +920,10 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         nvs_flash_erase();
         nvs_flash_init();
     }
+
+    /* Mount LittleFS before any server starts, so both the portal path
+     * and the saved-credentials fast path can serve files. */
+    fs_mount();
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -868,6 +971,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
             pdMS_TO_TICKS(10000));
 
         if (bits & EVT_STA_CONNECTED) {
+            app_server_start();  /* start robot UI on port 80 */
             return ESP_OK;  /* connected -- skip portal entirely */
         }
 
