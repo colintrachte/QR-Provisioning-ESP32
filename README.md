@@ -175,6 +175,45 @@ The display is yours to use at any point — just call `display_draw_*` and
 success screen.
 
 ---
+## Dev Notes:
+
+project notes:
+libraries that I use as-is are loaded as submodules.
+u8g2 hal has been modified for compatibility with the esp32S3. Therefore it cannot be a submodule.
+
+git config --global --add safe.directory C:/Users/Colin/Desktop/QR-Provisioning-ESP32
+# U8G2 Main Library
+git submodule add https://github.com/olikraus/u8g2.git components/u8g2
+
+# U8G2 HAL for ESP-IDF (The bridge between U8G2 and ESP32 hardware) has to be
+do not add this as submodule. download manually. needs edits to work with the esp32-s3 https://github.com/mdvorak/esp-u8g2-hal.git components/u8g2_hal
+
+# QR Code Generator (The C-port optimized for embedded)
+git submodule add https://github.com/nayuki/QR-Code-generator.git components/QR-Code-generator
+
+git submodule add https://github.com/joltwallet/esp_littlefs.git components/esp_littlefs
+cd components/esp_littlefs
+git submodule update --init --recursive
+
+While the PlatformIO (PIO) Library Manager is excellent for standard Arduino projects, we moved to a Components workflow with submodules/vendoring for several mechanical and strategic reasons:
+
+1. Hardware Specificity (The "S3 Problem")
+The Heltec V3 uses the ESP32-S3. Many versions of u8g2_hal on the PIO Registry were written for the original ESP32 and contain "whitelist" manifests (idf_component.yml) that explicitly block the S3. By bringing the code into your components folder, you can delete those restrictive manifests and patch the legacy SPI/I2C host names directly.
+
+2. Deep Integration with ESP-IDF
+Since you are using the espidf framework rather than Arduino, the build system (CMake) needs to see your libraries as "Components" to properly handle dependencies. The PIO Library Manager often struggles with complex ESP-IDF components that require specific CMakeLists.txt logic to link correctly with other internal drivers like driver or freertos.
+
+3. Supply Chain Survival
+As a developer who prioritizes resilient systems and local data ownership, you now "own" the source code.
+
+No "Hostage" Code: You aren't reliant on a cloud registry being online to build your project.
+
+Version Lock: External authors cannot push an update that breaks your specific "MuleBot" motor ramp logic or display timing.
+
+Customization: You can prune the "extra stuff" (like Java/Python/Rust files in the QR generator) to keep your project root clean without the library manager re-downloading them every time.
+
+4. Avoiding "Multiple Definition" Errors
+When using the components folder, ESP-IDF handles the linking. If PIO also downloads those same libraries into .pio/libdeps, the compiler sees two versions of the same function, leading to "Multiple Definition" fatal errors. Moving entirely to the components folder eliminates this conflict.
 
 ## Troubleshooting
 

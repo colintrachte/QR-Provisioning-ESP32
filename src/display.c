@@ -59,9 +59,10 @@ void display_init(void)
     /* 3. Point the mkfrey HAL at our I2C pins.
      *    RST is passed as -1 — we already handled it above. */
     u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
-    hal.bus.i2c.sda = DISP_PIN_SDA;
-    hal.bus.i2c.scl = DISP_PIN_SCL;
+    hal.sda = DISP_PIN_SDA;
+    hal.scl = DISP_PIN_SCL;
     hal.reset        = -1;
+    hal.i2c_num = I2C_NUM_0;
     u8g2_esp32_hal_init(hal);
 
     /* 4. Initialise u8g2 for SSD1306 128×64 in full-frame-buffer mode.
