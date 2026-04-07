@@ -1,5 +1,23 @@
 Here is a critique of with suggestions for improvement:
 
+Overall:
+
+We need to be thinking about keeping these files manageable from both human and AI points of view.
+comments are super helpful and I don't want to get rid of them, but needs to be worded efficiently and/or moved into the readme.
+Consider storing global constants in a central config.
+Research Wifimanager (the arduino library) and how it implemented everything. Are there lessons to be learned that we can implement?
+
+What major aspects of coding projects are we weak on? For example, we haven't discussed whether and how much unit testing or automated builds we need.
+
+Is websocket the best approach to control an RC vehicle in realtime, or should we be thinking about optimized UDP?
+
+We need to start thinking about packaging up this project as a library or template. I want to drop in all this functionality to any ESP32 project I build from now on.
+
+What variants of the ESP32, or alternatives with similar price and performance, should be designed for, besides the one I have already specified? For example, I have a bunch of TTGO v1 boards. do we need separate HAL files for each?
+
+once we are all the way connected to a network, detect if the user is connected to the device, such as through the index.html or through some UDP. If they are not connected, display a QR code in addition to the IP address. get rid of "connected to" as that is implied by showing IP.
+
+
 main.c:
 git submodule add https://github.com/nayuki/QR-Code-generator#master components/QR-Code-generator
 
@@ -14,7 +32,7 @@ Improvement: Consider using a non-blocking poll or a dedicated timer if you ever
 
 2. The Main Loop & Task Starvation
 
-keep in mind that some things like motor control need to be processed much faster than 10hz. the display should be updated only when there is a good reason; refreshing for refreshing sake is no bueno. 
+keep in mind that some things like motor control need to be processed much faster than 10hz. the display should be updated only when there is a good reason; refreshing for refreshing sake is no bueno.
 
 The main loop runs at 10 Hz and handles prov_ui_tick().
 
@@ -39,7 +57,6 @@ Recommendation: Wrap the dirty flag checks and u8g2 calls in a Mutex if the disp
 
 2. QR Code Logic
 Coordinate Validation: In display_draw_qr, there is no check to see if x + total or y + total exceeds the 128x64 boundary. While u8g2 performs internal clipping, calculating a total size that exceeds the screen might lead to unexpected visual artifacts or "wrapped" QR codes depending on the scaling.
-
 Scaling Optimization: The loop for drawing modules uses u8g2_DrawBox. For a scale of 1, u8g2_DrawPixel is significantly faster.
 
 3. API Consistency
@@ -91,3 +108,22 @@ Task Stack Sizes
 You are using 4096 for almost every task.
 
 Observation: dns_task and scan_task likely need it (due to networking/WiFi stacks), but reboot_task is assigned 1024. This is safe, but event_task might need more if the user-provided on_state_change callback performs heavy operations (like complex logging or SPIFFS writes).
+
+index.html, style.css, and scripts.js:
+
+The Issue: On very small screens, the telemetry-grid might feel cramped. The speed value (1.55rem) is large, which is great for visibility, but could overlap with the "FWD/REV" labels if the speed hits 4 digits (e.g., 1023).
+
+The Issue: The joystick-knob uses a hardcoded radial gradient. While it looks nice, it doesn't utilize the --clr-accent token as dynamically as it could.
+
+2. User Experience (UX)
+research how far we can and should realistically push the esp32 for hosting this frontend. Implement some safety switch toggle to take control of the bot (normally it would be controlled through a unity game)
+Joystick Feedback: Currently, the knob "snaps" back to center visually when released, which is correct. However, there is no haptic feedback. For a remote control, a tiny vibration when the joystick enters the deadzone or hits max throw is very helpful.
+we need a responsive layout and some way to detect and/or manually switch UI modes if the user is on a PC or phone. for example, the joystick is great on a touchscreen but not on a PC.
+We need some kind of basic telemetry visible like battery and connection strength.
+Keyboard Ghosting: You are using Set() for heldKeys, which is excellent. However, if a user holds W and S simultaneously, the axes result in 0. This is technically correct, but a human would probably want it to be the same effect as the forward key.
+realistically a human using the keyboard for control would have to be tapping keys to approximate the % of each vector they want in realtime. so there needs to be a rolling calculated vector from it.
+
+Orientation: On mobile, if the user rotates the phone to landscape, the 100dvh height and flex-start alignment might push the telemetry off-screen.
+
+3. Technical Logic
+WebSocket Safety: In connectWS, you handle the onclose and onerror well. However, if the robot sends telemetry extremely fast, the updateTrackCard function will cause frequent DOM reflows.
