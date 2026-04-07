@@ -1,0 +1,9 @@
+[submodule "components/esp_littlefs"]
+	path = components/esp_littlefs
+	url = https://github.com/joltwallet/esp_littlefs.git
+[submodule "components/u8g2_hal"]
+	path = components/u8g2_hal
+	url = https://github.com/mdvorak/esp-u8g2-hal.git
+[submodule "components/QR-Code-generator"]
+	path = components/QR-Code-generator
+	url = https://github.com/nayuki/QR-Code-generator.git
