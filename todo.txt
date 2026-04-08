@@ -2,10 +2,21 @@ Here is a critique of with suggestions for improvement:
 
 Overall:
 
-We need to be thinking about keeping these files manageable from both human and AI points of view.
-comments are super helpful and I don't want to get rid of them, but needs to be worded efficiently and/or moved into the readme.
+We need to keep files manageable from both human and AI practical points of view.
+Anything that is "mature" and not likely to see much change in the future needs to be considered for packaging up in some modular way, so we can continue to develop new features without drowning the AI in code that doesn't need to be edited.
+comments are super helpful and I don't want to get rid of them, but needs to be worded efficiently, moved into the readme, or converted to serial log and telemetry.
+Some refactored comments could be converted into intelligent reporting of what the controller is doing.
+Every function should report what it is doing to serial monitor, with some config flags to turn categories of debug on or off.
 Consider storing global constants in a central config.
-Research Wifimanager (the arduino library) and how it implemented everything. Are there lessons to be learned that we can implement?
+there needs to be a subsystem that detects and reports problems that are not already readily apparent from the espidf, libraries, or compiler. anytime there is potential for an issue that cannot be resolved by improved coding. Examples like battery or wifi strength low, peripherals not functioning, bad quality connection, maybe even javascript errors?
+
+Actions need to be as independent as possible from graphical UI. So if for some reason the LCD is not connecting, the rest of the program works fine.
+
+We actually want 3 qr codes. one to connect to AP, one for the setup page address, and one for the index page address.
+once we are all the way connected to a network, detect if the user is connected to the device, such as through the index.html or through some UDP. If they are not connected, display a QR code in addition to the IP address. get rid of "connected to" as that is implied by showing IP.
+If for some reason the user cannot scan the QR code, a human readable equivalent needs to be displayed on the other half of the screen.
+
+Research Wifimanager (the arduino library) and how it implemented everything. Are there lessons learned that we can implement for this project? Are there features we should imitate or improve on?
 
 What major aspects of coding projects are we weak on? For example, we haven't discussed whether and how much unit testing or automated builds we need.
 
@@ -13,14 +24,14 @@ Is websocket the best approach to control an RC vehicle in realtime, or should w
 
 We need to start thinking about packaging up this project as a library or template. I want to drop in all this functionality to any ESP32 project I build from now on.
 
-What variants of the ESP32, or alternatives with similar price and performance, should be designed for, besides the one I have already specified? For example, I have a bunch of TTGO v1 boards. do we need separate HAL files for each?
-
-once we are all the way connected to a network, detect if the user is connected to the device, such as through the index.html or through some UDP. If they are not connected, display a QR code in addition to the IP address. get rid of "connected to" as that is implied by showing IP.
+What variants of the ESP32, or alternatives with similar price and performance, should be designed for, besides the one I have already specified?
+or example, I have a bunch of TTGO v1 boards and some newer HTIT-Tracker heltec boards. do we need separate HAL files for each? can esp-idf handle all these, or is the HTIT incompatible?
+If for some reason the LCD screen is disconnected or missing, the rest of the firmware should make a best effort to function without it.
+In the past, I resolved this problem by having a list of peripherals to scan for on i2c or spi. (typically if esp32 does not come with an LCD I would use i2c to connect one)
+then make decisions based on whether each lcd or sensor is found. TTGO v1 for example has a power management chip, a gps, lora, onboard temp sensor, lcd, etc.
 
 
 main.c:
-git submodule add https://github.com/nayuki/QR-Code-generator#master components/QR-Code-generator
-
 there are a few areas regarding robustness, power management, and task architecture that could be improved.
 
 1. Re-provisioning Logic (Blocking behavior)
