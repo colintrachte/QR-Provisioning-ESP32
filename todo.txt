@@ -1,18 +1,58 @@
-Here is a critique of with suggestions for improvement:
-
 Overall:
 
-We need to keep files manageable from both human and AI practical points of view.
-Anything that is "mature" and not likely to see much change in the future needs to be considered for packaging up in some modular way, so we can continue to develop new features without drowning the AI in code that doesn't need to be edited.
-comments are super helpful and I don't want to get rid of them, but needs to be worded efficiently, moved into the readme, or converted to serial log and telemetry.
-Some refactored comments could be converted into intelligent reporting of what the controller is doing.
+This project is inspired by Meshtastic, and my frustration with the limitations of it for robotics. I want to do much more than send messages, and I want my project to provide a foundation and a quick bootstrap for many use cases that all have overlapping needs.
+I do not want to require a cloud service or subscription, though I might be ok with providing options.
+The goal of this project is to bring a wifi-enabled iot device onto a wifi network, provision the device further depending on hardware, developer project goals, and user selections, and then offer a best fit boilerplate UI from a library of frontend templates that broadly cover most use cases.
+
+AI:
+It is a priority to keep files manageable from both human and AI practical points of view.
+Anything that is "mature" and not likely to see much change in the future needs to be considered for packaging up in some modular way.
+Keep things neat and compartmentalize in a way that allows us to develop new features without drowning the AI in code that doesn't need to be edited.
+I want to be able to feed the AI no more than 3 files and have 90% likelihood of getting a correct response back.
+Comments can be super helpful for more arcane portions of code, but they need to be concise and should not be redundant to what is already obvious from the readme, serial log and telemetry, function names, or @params descriptions.
+Sometimes a comment makes more sense if translated to one of those other forms, especially if it results in useful reporting of what the controller is doing.
+Every function should have every @param filled out.
+
+Actions need to be as independent as possible from graphical UI. So if for some reason the LCD or webpage is not working, the rest of the program works fine.
+
+Use cases:
+realtime control like an RC tank.
+Control one device from another, either directly or through a gateway.
+Arrange and send sequences of commands from the user, which are then interpreted by the device.
+I might want a chicken coop door controller that is entirely self contained but can send status updates periodically to home assistant.
+Control the device from one of the mainstream smarthome platforms like homeassistant, google, or amazon.
+Control the device from a custom unity app.
+All of these use cases have to be built on top of a common list of features that are either not available, not reliable, not user friendly, or not packaged together for ESP32 and esp-idf as a generic starting point.
+
+File System: We use littlefs. Do not use SPIFFS, it is deprecated.
+Framework: We use esp-idf with component folder. Platformio is mostly used as a developer interface and should not be used for managing libraries.
+Config: We have a central config file for globals that should be baked in by the compiler. There may need to be a separate config in the filesystem for dynamic global settings such as wifi config, calibration, user settings, and more.
+
+Display: This project is built around the ability to generate QR codes if an LCD is available on SPI or i2c. If the display is not working you can always get connected old school by searching for the AP and typing the password.
+However, IP addresses and similar technical things that are meant for computers to read, should be presented in a QR code in addition to english.
+Therefore ESP32 variants with lcd or epaper backpacks 64px tall or bigger are prioritized. Your phone or pc becomes the frontend so we don't have to have a fancy display on the controller.
+
+Comms: The ability to serve up a connection setup page is a core feature.
+Once a wifi connection is made to the device from a phone or pc, we can enable and provision other types of communication more easily.
+Default is to try to add the device to a local Wifi network and then connect to the device that way from then on.
+Depending on the hardware, we could also try to set up BLE, Bluetooth, or LoRa (either join an existing network or use some custom protocol)
+The type of connections being used sets many other constraints which must be tracked all the way through the firmware. For example, LoRa has legal rules such as airtime limits, and which frequency is allowed depending on country (see meshtastic for example of implementation)
+
+Updates: The ability to detect available updates, then flash new firmware and local webpage files from the internet is a core feature. Prefer to keep user settings intact, and warn the user when that is not possible.
+
+Frontend: Right now the frontend UI is responsive vanilla javascript and html css with few or no dependencies.
+The only real requirements are that it doesn't overwhelm the microcontroller, works reliably, and doesn't require an internet connection to load.
+We need to add the ability to switch between types of frontends easily depending on what the use case is. We need to store the use case in the user settings, which determines which UI is displayed.
+
+Health monitor: detects and reports problems that are not already readily apparent from the espidf, libraries, or compiler.
+Attempts to anticipate all potential issues that cannot be resolved by improved coding, and warn the user or the developer as appropriate.
+Examples like battery or wifi strength low, peripherals not functioning, bad quality connection, maybe javascript/html errors.
 Every function should report what it is doing to serial monitor, with some config flags to turn categories of debug on or off.
-Consider storing global constants in a central config.
-there needs to be a subsystem that detects and reports problems that are not already readily apparent from the espidf, libraries, or compiler. anytime there is potential for an issue that cannot be resolved by improved coding. Examples like battery or wifi strength low, peripherals not functioning, bad quality connection, maybe even javascript errors?
+If for some reason the LCD screen (for example) is disconnected or missing, the rest of the firmware should make a best effort to function without it.
+Keep a list of peripherals to scan for on i2c and spi. (typically if esp32 does not come with an LCD I would use i2c to connect one)
+Make decisions based on whether each lcd or sensor is found. TTGO v1 for example has a power management chip, a gps, lora, onboard temp sensor, lcd, etc.
 
-Actions need to be as independent as possible from graphical UI. So if for some reason the LCD is not connecting, the rest of the program works fine.
-
-We actually want 3 qr codes. one to connect to AP, one for the setup page address, and one for the index page address.
+QR codes: We currently have 3 qr codes. one to connect to AP, one for the setup page address, and one for the index page address.
 once we are all the way connected to a network, detect if the user is connected to the device, such as through the index.html or through some UDP. If they are not connected, display a QR code in addition to the IP address. get rid of "connected to" as that is implied by showing IP.
 If for some reason the user cannot scan the QR code, a human readable equivalent needs to be displayed on the other half of the screen.
 
@@ -22,119 +62,5 @@ What major aspects of coding projects are we weak on? For example, we haven't di
 
 Is websocket the best approach to control an RC vehicle in realtime, or should we be thinking about optimized UDP?
 
-We need to start thinking about packaging up this project as a library or template. I want to drop in all this functionality to any ESP32 project I build from now on.
-
 What variants of the ESP32, or alternatives with similar price and performance, should be designed for, besides the one I have already specified?
-or example, I have a bunch of TTGO v1 boards and some newer HTIT-Tracker heltec boards. do we need separate HAL files for each? can esp-idf handle all these, or is the HTIT incompatible?
-If for some reason the LCD screen is disconnected or missing, the rest of the firmware should make a best effort to function without it.
-In the past, I resolved this problem by having a list of peripherals to scan for on i2c or spi. (typically if esp32 does not come with an LCD I would use i2c to connect one)
-then make decisions based on whether each lcd or sensor is found. TTGO v1 for example has a power management chip, a gps, lora, onboard temp sensor, lcd, etc.
-
-
-main.c:
-there are a few areas regarding robustness, power management, and task architecture that could be improved.
-
-1. Re-provisioning Logic (Blocking behavior)
-The reprovision_requested function uses a blocking vTaskDelay. While acceptable for a simple startup check, it prevents anything else from happening during those 3 seconds.
-
-Critique: If the display or other peripherals require background interrupts or watchdog feeding, this hard block could cause issues (though unlikely this early in app_main).
-
-Improvement: Consider using a non-blocking poll or a dedicated timer if you ever expand the startup sequence to include background tasks like sensor calibration.
-
-2. The Main Loop & Task Starvation
-
-keep in mind that some things like motor control need to be processed much faster than 10hz. the display should be updated only when there is a good reason; refreshing for refreshing sake is no bueno.
-
-The main loop runs at 10 Hz and handles prov_ui_tick().
-
-Critique: While prov_ui_tick() is noted as non-blocking, placing heavy application logic inside the if (wifi_manager_is_connected()) block in the same loop is risky. As your application grows, the time spent in "application logic" will jitter the 100ms timing of the UI tick.
-
-Improvement: Once connected, it is better practice to spawn a separate FreeRTOS task for your application logic. This keeps the UI responsive regardless of how long a "sensor read" or "network request" takes.
-
-3. Error Handling and Recovery
-The code handles wifi_manager_start failure by restarting the ESP32.
-
-Critique: If the failure is due to a persistent hardware issue or an NVS corruption that wifi_manager_erase_credentials() didn't fix, you may enter a "boot loop."
-
-Improvement: Implement a retry counter or a "Safe Mode" display state that stays on screen rather than restarting indefinitely.
-
-display.c:
-
-Initialization Guard: You have a s_initialized flag, but it is currently only set to true and never checked. If a caller invokes display_draw_text before display_init, the application will crash when it attempts to dereference the uninitialized u8g2_t struct.
-
-Thread Safety: ESP32 applications are almost always multi-threaded. If one task calls display_draw_text while another calls display_flush, you may encounter race conditions in the u8g2 buffer.
-
-Recommendation: Wrap the dirty flag checks and u8g2 calls in a Mutex if the display is accessed by multiple tasks.
-
-2. QR Code Logic
-Coordinate Validation: In display_draw_qr, there is no check to see if x + total or y + total exceeds the 128x64 boundary. While u8g2 performs internal clipping, calculating a total size that exceeds the screen might lead to unexpected visual artifacts or "wrapped" QR codes depending on the scaling.
-Scaling Optimization: The loop for drawing modules uses u8g2_DrawBox. For a scale of 1, u8g2_DrawPixel is significantly faster.
-
-3. API Consistency
-Font State: display_draw_text sets the font and color every time it is called. While safe, it’s slightly inefficient if drawing multiple strings.
-
-Draw Color Persistence: Most functions set the draw color to 1 and then "restore" it. However, display_clear_region sets it to 0 and then back to 1. If a user wants to draw in "Black" (inverted) mode, your wrappers will constantly fight them.
-
-Recommendation: Consider a display_set_color(int color) function rather than hardcoding 1 inside every draw call.
-
-4. Hardware Specifics
-I2C Frequency: The u8g2_esp32_hal_init call uses defaults. For the SSD1306, you can often push the I2C clock to 400kHz or even 1MHz (if the bus pull-ups allow) to make display_flush faster.
-
-Vext Management: You power on the OLED in init, but display_power(false) only sends the SSD1306 "sleep" command. On the Heltec V3, keeping Vext high still consumes some leakage current.
-
-prov_ui.c
-
-Static Buffer Risks: You use s_ssid and s_ip to cache connection info. While you use strncpy in prov_ui_on_connected, the render_connecting function accesses s_ssid directly. If prov_ui_on_state_change triggers WIFI_MANAGER_STATE_STA_CONNECTING before the first connection is established, it relies on s_ssid[0] being null. It is safer to pass the SSID explicitly into the state change event via the ctx pointer or a dedicated event payload.
-
-String Truncation: In render_connected and render_connecting, you truncate the SSID to 21 characters for the UI. However, the s_ssid buffer is 33 bytes. This is good for UI layout, but ensure the "..." placeholder logic doesn't hide essential information if multiple SSIDs share a prefix.
-
-The "One-Way" IP Cache: Once s_ip is populated, it remains in memory. If the device loses connection and reverts to AP mode, render_connected will still show the old IP if called. Consider clearing these buffers when entering an error or AP state.
-
-Status Bar Overlap: render_status_bar clears a specific region (y=54 to 64). However, render_qr_screen calls display_clear(), which wipes the status bar. If the WiFi manager sends a status update (e.g., "Credentials saved") and then immediately triggers a state change that calls render_qr_screen, the status message will vanish instantly.
-
-Hardcoded Constants: The IP WIFI_MANAGER_AP_IP is used in prov_ui_init. While common in ESP32 projects, passing this as an argument or using a config struct would make the UI module more portable.
-
-wifi_manager.c
-2. DNS Hijacking Logic
-Your DNS task is quite clever in its "minimalist" approach, but it has a potential flaw:
-
-Issue: It currently ignores the Transaction ID of the DNS query. While many clients are lenient, some modern OS security stacks might discard a DNS response if the ID in bytes 0-1 doesn't match the query.
-
-Fix: You are doing memcpy(resp, buf, len), which does copy the ID. However, ensure you aren't over-relying on the query size. A hardcoded 16-byte suffix is fine for A records, but ensure the Questions count in the header is exactly 1.
-
-3. NVS Handling
-Issue: In wifi_manager_start, you call nvs_flash_init().
-
-Fix: If the user of your component has already initialized NVS earlier in app_main, this might cause unexpected behavior or redundant logging. It’s usually better to document that NVS must be initialized before calling your library, or check the return code of nvs_open to see if initialization is missing.
-
-4. Hardcoded IP Configuration
-Issue: You've hardcoded the DNS response IP: uint8_t gw[4] = {192, 168, 4, 1};.
-
-Fix: If the user changes the WIFI_MANAGER_AP_IP in the header, the DNS task will still point to the old address. You should derive gw[4] from the macro or a config variable.
-
-Missing closedir on Error
-In fs_mount, if the filesystem is empty or readdir fails, you handle it well. However, if you add logic that returns early from that loop, ensure closedir(dp) is always reached to avoid a file descriptor leak.
-
-Task Stack Sizes
-You are using 4096 for almost every task.
-
-Observation: dns_task and scan_task likely need it (due to networking/WiFi stacks), but reboot_task is assigned 1024. This is safe, but event_task might need more if the user-provided on_state_change callback performs heavy operations (like complex logging or SPIFFS writes).
-
-index.html, style.css, and scripts.js:
-
-The Issue: On very small screens, the telemetry-grid might feel cramped. The speed value (1.55rem) is large, which is great for visibility, but could overlap with the "FWD/REV" labels if the speed hits 4 digits (e.g., 1023).
-
-The Issue: The joystick-knob uses a hardcoded radial gradient. While it looks nice, it doesn't utilize the --clr-accent token as dynamically as it could.
-
-2. User Experience (UX)
-research how far we can and should realistically push the esp32 for hosting this frontend. Implement some safety switch toggle to take control of the bot (normally it would be controlled through a unity game)
-Joystick Feedback: Currently, the knob "snaps" back to center visually when released, which is correct. However, there is no haptic feedback. For a remote control, a tiny vibration when the joystick enters the deadzone or hits max throw is very helpful.
-we need a responsive layout and some way to detect and/or manually switch UI modes if the user is on a PC or phone. for example, the joystick is great on a touchscreen but not on a PC.
-We need some kind of basic telemetry visible like battery and connection strength.
-Keyboard Ghosting: You are using Set() for heldKeys, which is excellent. However, if a user holds W and S simultaneously, the axes result in 0. This is technically correct, but a human would probably want it to be the same effect as the forward key.
-realistically a human using the keyboard for control would have to be tapping keys to approximate the % of each vector they want in realtime. so there needs to be a rolling calculated vector from it.
-
-Orientation: On mobile, if the user rotates the phone to landscape, the 100dvh height and flex-start alignment might push the telemetry off-screen.
-
-3. Technical Logic
-WebSocket Safety: In connectWS, you handle the onclose and onerror well. However, if the robot sends telemetry extremely fast, the updateTrackCard function will cause frequent DOM reflows.
+For example, I have a bunch of TTGO v1 boards and some newer HTIT-Tracker heltec boards. do we need separate HAL files for each? can esp-idf handle all these, or is the HTIT incompatible?
