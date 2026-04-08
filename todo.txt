@@ -28,6 +28,12 @@ File System: We use littlefs. Do not use SPIFFS, it is deprecated.
 Framework: We use esp-idf with component folder. Platformio is mostly used as a developer interface and should not be used for managing libraries.
 Config: We have a central config file for globals that should be baked in by the compiler. There may need to be a separate config in the filesystem for dynamic global settings such as wifi config, calibration, user settings, and more.
 
+In a professional ESP-IDF workflow, the division of labor should be:
+
+sdkconfig.defaults: Framework, Silicon, and Driver settings (Memory, PSRAM, Clock, Partition offsets).
+
+platformio.ini: Project metadata and Application-level logic (Environment names, Serial speeds, Pin logic flags).
+
 Display: This project is built around the ability to generate QR codes if an LCD is available on SPI or i2c. If the display is not working you can always get connected old school by searching for the AP and typing the password.
 However, IP addresses and similar technical things that are meant for computers to read, should be presented in a QR code in addition to english.
 Therefore ESP32 variants with lcd or epaper backpacks 64px tall or bigger are prioritized. Your phone or pc becomes the frontend so we don't have to have a fancy display on the controller.
