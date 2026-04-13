@@ -12,6 +12,10 @@ const PING_RATE_MS  = 2000;   // latency probe interval
 // is held, and decays back to 0 over the same duration when released.
 const KEY_RAMP_MS   = 180;
 
+// LED: WebSocket message prefix for brightness commands → e.g. "led:0.75"
+// Firmware maps 0.0–1.0 to ledc PWM duty on the onboard LED pin.
+const LED_PREFIX    = 'led';
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let axisX      = 0;
@@ -32,6 +36,9 @@ const KEY_AXIS = { w: [0, 1], a: [-1, 0], s: [0, -1], d: [1, 0] };
 // Telemetry batching
 let pendingTelemetry = null;
 let rafScheduled     = false;
+
+// LED: last magnitude sent; -1 forces a send on the first tick
+let lastLedMag = -1;
 
 // Latency
 let pingSentAt    = 0;
@@ -117,6 +124,7 @@ function setArmed(state) {
   if (!armed) {
     centerJoystick();
     resetKeyRamps();
+    lastLedMag = -1; // force LED-off send on next tick
   }
 }
 
@@ -200,6 +208,7 @@ function startSendLoop() {
     } else {
       socket.send(`x:${axisX.toFixed(3)},y:${axisY.toFixed(3)}`);
     }
+    sendLed();
   }, SEND_RATE_MS);
 }
 
@@ -410,6 +419,23 @@ function setConnectionState(connected) {
     dom.battVal.textContent = '—';
     dom.rssiStat.classList.remove('warn');
     dom.battStat.classList.remove('warn');
+    lastLedMag = -1; // force LED-off resend on reconnect
+  }
+}
+
+// ── LED magnitude indicator ────────────────────────────────────────────────────
+// Sends "led:<mag>" when the joystick vector magnitude changes.
+// mag = Math.hypot(axisX, axisY), clamped 0–1 and rounded to 2 dp.
+// Sends 0 when disarmed.  Only transmits on change to avoid flooding the socket.
+// Firmware: parse "led:" prefix and write value to ledc_set_duty() on LED GPIO.
+
+function sendLed() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const mag     = armed ? Math.min(1, Math.hypot(axisX, axisY)) : 0;
+  const rounded = Math.round(mag * 100) / 100; // 0.01 resolution is plenty
+  if (rounded !== lastLedMag) {
+    lastLedMag = rounded;
+    socket.send(`${LED_PREFIX}:${rounded.toFixed(2)}`);
   }
 }
 

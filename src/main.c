@@ -132,7 +132,7 @@ static void app_task(void *arg)
          *   health_monitor_tick();    <- already called below; shown for
          *                               illustration only
          */
-        vTaskDelay(pdMS_TO_TICKS(10)); /* 100 Hz application loop */
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 

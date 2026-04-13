@@ -44,9 +44,7 @@ static const char *TAG = "wifi_mgr";
 #define FS_PARTITION  "storage"
 #define FS_CHUNK_SIZE 1024
 
-static esp_err_t serve_file(httpd_req_t *req,
-                             const char  *path,
-                             const char  *mime_type)
+static esp_err_t serve_file(httpd_req_t *req, const char  *path, const char  *mime_type)
 {
     ESP_LOGI(TAG, "serve_file: %s  mime=%s", path, mime_type);
 
@@ -63,6 +61,10 @@ static esp_err_t serve_file(httpd_req_t *req,
     ESP_LOGI(TAG, "serve_file: %s  (%ld bytes)", path, file_size);
 
     httpd_resp_set_type(req, mime_type);
+    if (strstr(path, ".css") || strstr(path, ".js"))
+    {
+        httpd_resp_set_hdr(req, "Cache-Control", "max-age=3600");
+    }
 
     char *buf = malloc(FS_CHUNK_SIZE);
     if (!buf) {
@@ -139,7 +141,7 @@ static TaskHandle_t          s_event_task   = NULL;
 static bool                  s_connected    = false;
 static bool                  s_sta_failed   = false;
 static char                  s_ip[16]       = {0};
-static int                   s_retry_count  = 0;
+static volatile int          s_retry_count  = 0;
 static char                  s_sta_ssid[33] = {0};
 static char                  s_sta_pass[64] = {0};
 
@@ -574,9 +576,10 @@ static esp_err_t handle_ws(httpd_req_t *req)
 {
 #ifdef CONFIG_HTTPD_WS_SUPPORT
     if (req->method == HTTP_GET) {
-        ESP_LOGI(TAG, "WS: handshake accepted");
+        ESP_LOGI(TAG, "WS handshake from %s", httpd_req_get_hdr_value_str(req, "Host", NULL, 0) == ESP_OK ? "client" : "unknown");
         return ESP_OK;
     }
+
     httpd_ws_frame_t pkt;
     memset(&pkt, 0, sizeof(pkt));
     pkt.type = HTTPD_WS_TYPE_TEXT;
@@ -589,12 +592,40 @@ static esp_err_t handle_ws(httpd_req_t *req)
         if (!pkt.payload) return ESP_ERR_NO_MEM;
         ret = httpd_ws_recv_frame(req, &pkt, pkt.len);
         if (ret == ESP_OK) {
-            ((char *)pkt.payload)[pkt.len] = '\0';
-            ESP_LOGD(TAG, "WS rx: %s", (char *)pkt.payload);
+            char *msg = (char *)pkt.payload;
+            (msg)[pkt.len] = '\0';
+            ESP_LOGD(TAG, "WS rx: %s", msg);
+            if (strcmp(msg, "ping") == 0)
+            {
+                httpd_ws_frame_t reply = { .payload = (uint8_t*)"pong", .len = 4, .type = HTTPD_WS_TYPE_TEXT };
+                httpd_ws_send_frame(req, &reply);
+            }
+            else if (strncmp(msg, "led:", 4) == 0)
+            {
+                float val = 0;
+                if (sscanf(msg + 4, "%f", &val) == 1)
+                {
+                    // TODO: Call motor_set_led(val);
+                    ESP_LOGD(TAG, "LED brightness: %.2f", val);
+                }
+            }
+            else if (strncmp(msg, "x:", 2) == 0)
+            {
+                float x, y;
+                if (sscanf(msg, "x:%f,y:%f", &x, &y) == 2)
+                {
+                    // TODO: Call motor_drive(x, y);
+                    ESP_LOGD(TAG, "Drive: x=%.2f, y=%.2f", x, y);
+                }
+            }
+            else if (strcmp(msg, "stop") == 0)
+            {
+                // TODO: Call motor_stop();
+            }
         }
         free(pkt.payload);
     }
-    return ret;
+    return ESP_OK;
 #else
     ESP_LOGW(TAG, "WS: CONFIG_HTTPD_WS_SUPPORT not enabled");
     httpd_resp_set_type(req, "text/plain");
@@ -793,7 +824,8 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 {
     if (!config || !config->ap_ssid) return ESP_ERR_INVALID_ARG;
     memcpy(&s_cfg, config, sizeof(s_cfg));
-
+    s_retry_count = 0;
+    s_sta_failed  = false;
     /* Parse AP IP once so dns_task uses the correct octets. */
     parse_ap_ip();
 
@@ -834,8 +866,8 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
     char saved_ssid[33] = {0};
     char saved_pass[64] = {0};
 
-    if (nvs_load_credentials(saved_ssid, sizeof(saved_ssid),
-                             saved_pass, sizeof(saved_pass))) {
+    if (nvs_load_credentials(saved_ssid, sizeof(saved_ssid),saved_pass, sizeof(saved_pass)))
+    {
         strncpy(s_sta_ssid, saved_ssid, sizeof(s_sta_ssid) - 1);
         strncpy(s_sta_pass, saved_pass, sizeof(s_sta_pass) - 1);
 
@@ -860,8 +892,6 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         }
 
         esp_wifi_disconnect();
-        s_retry_count = 0;
-        s_sta_failed  = false;
 
         esp_wifi_set_mode(WIFI_MODE_NULL);
         vTaskDelay(pdMS_TO_TICKS(100));

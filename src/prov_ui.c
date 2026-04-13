@@ -3,22 +3,22 @@
  *
  * Screen layout (128 × 64 px, SSD1306)
  * ─────────────────────────────────────
- *  Left  54 px  QR code at scale 2 (v1 QR = 21 modules → 42 px + quiet zone)
- *  x=56        Divider line
- *  Right 70 px  Human-readable equivalent of the QR content (x = 58 … 127)
- *  y = 54       Separator line
- *  y = 55-63    Status bar (8 px tall)
+ *  Left  55 px  QR code, auto-scaled to fit within QR_PANEL_W and DISP_HEIGHT.
+ *  Right 70 px  Human-readable equivalent (x = 58 … 127).
+ *  y = 55-63    Status bar (no separator line).
  *
- * Three QR codes cycle through provisioning
- * ──────────────────────────────────────────
- *  QR_WIFI   — WIFI: URI to auto-join the AP (shown when AP first starts)
- *  QR_SETUP  — URL to the captive portal setup page (shown when client joins)
- *  QR_INDEX  — URL to the robot control page (shown when connected to network)
+ * QR scale selection
+ * ──────────────────
+ *  best_qr_scale() picks the largest integer scale (3 → 2 → 1) where the
+ *  rendered image (modules × scale + quiet × 2) fits both dimensions.
+ *  This prevents the 66 px overflow that occurs when a longer WIFI: URI
+ *  (e.g. 38 chars) produces a v3 QR (29 modules) at the old hardcoded scale=2.
  *
- * Split layout
- * ────────────
- *  Every QR screen also shows a human-readable text equivalent on the right
- *  half so users who cannot scan QR codes are never blocked.
+ * Three QR codes used during provisioning
+ * ────────────────────────────────────────
+ *  QR_WIFI   — WIFI: URI so the phone camera can auto-join the AP.
+ *  QR_SETUP  — URL to the captive-portal setup page.
+ *  QR_INDEX  — URL to the robot control page (built once the real IP is known).
  */
 
 #include "prov_ui.h"
@@ -30,6 +30,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "qrcodegen.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -47,56 +48,69 @@ static bool    s_qr_index_ok = false;
 typedef enum { QR_WIFI = 0, QR_SETUP = 1, QR_INDEX = 2 } qr_slot_t;
 static qr_slot_t s_qr_shown = QR_WIFI;
 
-/* ── Stored connection info ──────────────────────────────────────────────────
- * Written by on_connected; cleared on state transitions that leave STA mode
- * so stale data is never shown if the device drops back to AP mode.
- */
+/* ── Stored connection info ─────────────────────────────────────────────────*/
 static char s_ssid[33] = {0};
 static char s_ip[16]   = {0};
 
 /* ── Layout constants ───────────────────────────────────────────────────────*/
-#define QR_X          0    /* QR code left edge                              */
-#define QR_Y          0    /* QR code top edge                               */
-#define QR_SCALE      2    /* 2 px/module → 42 px + 4 px quiet = 46 px wide */
-#define DIVIDER_X    55    /* vertical divider between QR and text           */
-#define TEXT_X       58    /* text column start                              */
-#define TEXT_COL_W   68    /* available text column width (58…127)           */
-#define STATUS_LINE_Y 54   /* separator above status bar                     */
-#define STATUS_TEXT_Y 56   /* status bar text baseline                       */
-#define CONTENT_H    54    /* usable height above status bar                 */
+#define QR_X          0    /* QR left edge (including quiet zone)            */
+#define QR_Y          0    /* QR top edge                                    */
+#define QR_PANEL_W   55    /* max px for QR column; TEXT_X must exceed this  */
+#define TEXT_X       58    /* right-column text start                        */
+#define STATUS_CLR_Y 54    /* top of status-bar clear region                 */
+#define STATUS_TEXT_Y 56   /* status text baseline                           */
 
-/* ── Status bar deferred message ─────────────────────────────────────────────
- * render_status_bar() is sometimes called just before a full-screen redraw
- * (e.g. CREDS_RECEIVED then immediately AP_STARTED).  We hold the message
- * for one tick so the status text survives partial redraws.
- *
- * Implementation: the last status message is stored and re-applied at the
- * bottom of every render_qr_screen() call, so a status update that arrives
- * just before a screen transition is never lost.
- */
+/* ── Status bar message — persists across full-screen redraws ───────────────*/
 static char s_status_msg[32] = {0};
+
+/* ── QR scale helper ─────────────────────────────────────────────────────────
+ * Returns the largest scale where the rendered QR fits within both QR_PANEL_W
+ * (horizontal) and DISP_HEIGHT (vertical).  Falls back to 1 if nothing fits.
+ *
+ * Quiet zone: display_draw_qr() uses (scale < 3) ? scale*2 : 0 px.
+ *
+ * @param qrcode  Buffer produced by qrcodegen_encodeText().
+ * @return        Scale factor (1, 2, or 3).
+ */
+static int best_qr_scale(const uint8_t *qrcode)
+{
+    int modules = qrcodegen_getSize(qrcode);
+    const uint8_t quiet = 2; // modules
+    const uint8_t total_modules = modules + (2 * quiet);
+
+    /* * We want the largest 's' such that:
+     * total_modules * s <= available_pixels
+     * available_pixels = min(QR_PANEL_W, DISP_HEIGHT)
+     */
+    uint8_t limit = (QR_PANEL_W < DISP_HEIGHT) ? QR_PANEL_W : DISP_HEIGHT;
+    uint8_t s = limit / total_modules;
+
+    if (s < 1) return 1;
+    if (s > 3) return 3; // Keep it within reasonable bounds for SSD1306
+    return s;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  INTERNAL SCREEN RENDERERS
  * ═══════════════════════════════════════════════════════════════════════════*/
 
-/** We don't like lines. just show the status bar from the stored message. */
+/* Re-draws the stored status message at the bottom of the screen.
+ * Called at the end of every render_qr_screen() so a status update that
+ * races with a full-screen transition is never silently dropped. */
 static void render_chrome(void)
 {
-    //display_draw_vline(DIVIDER_X, 0, CONTENT_H);
-    //display_draw_hline(0, STATUS_LINE_Y, DISP_WIDTH);
     if (s_status_msg[0]) {
         display_draw_text(2, STATUS_TEXT_Y, s_status_msg, DISP_FONT_SMALL);
     }
 }
 
 /**
- * Draw a QR code on the left and human-readable text on the right.
+ * Clear screen, draw QR on left (auto-scaled) and text labels on right.
  *
- * @param slot   Which QR to render.
- * @param label1 First label line (e.g. "Join AP").
- * @param label2 Second label line (e.g. "RobotSetup").
- * @param label3 Third label line (small, e.g. "robot1234" or an IP).
+ * @param slot    Which pre-generated QR buffer to render.
+ * @param label1  First right-column line (DISP_FONT_SMALL).
+ * @param label2  Second right-column line.
+ * @param label3  Third right-column line.
  */
 static void render_qr_screen(qr_slot_t slot,
                               const char *label1,
@@ -107,41 +121,39 @@ static void render_qr_screen(qr_slot_t slot,
     bool     ready = false;
 
     switch (slot) {
-    case QR_WIFI:
-        qr = s_qr_wifi;  ready = s_qr_wifi_ok;  break;
-    case QR_SETUP:
-        qr = s_qr_setup; ready = s_qr_setup_ok; break;
-    case QR_INDEX:
-        qr = s_qr_index; ready = s_qr_index_ok; break;
+    case QR_WIFI:  qr = s_qr_wifi;  ready = s_qr_wifi_ok;  break;
+    case QR_SETUP: qr = s_qr_setup; ready = s_qr_setup_ok; break;
+    case QR_INDEX: qr = s_qr_index; ready = s_qr_index_ok; break;
     }
 
     display_clear();
 
-    /* Left: QR code */
     if (ready) {
-        display_draw_qr(QR_X, QR_Y, QR_SCALE, qr);
+        int scale = best_qr_scale(qr);
+        ESP_LOGD(TAG, "render_qr slot=%d scale=%d modules=%d",
+                 (int)slot, scale, qrcodegen_getSize(qr));
+        display_draw_qr(QR_X, QR_Y, scale, qr);
     } else {
         display_draw_text(2, 20, "QR N/A", DISP_FONT_SMALL);
     }
 
-    /* Right: human-readable text equivalent */
-    if (label1) display_draw_text(TEXT_X,  1, label1, DISP_FONT_SMALL);
-    if (label2) display_draw_text(TEXT_X, 12, label2, DISP_FONT_SMALL);
-    if (label3) display_draw_text(TEXT_X, 23, label3, DISP_FONT_SMALL);
+    if (label1 && label1[0]) display_draw_text(TEXT_X,  1, label1, DISP_FONT_SMALL);
+    if (label2 && label2[0]) display_draw_text(TEXT_X, 12, label2, DISP_FONT_SMALL);
+    if (label3 && label3[0]) display_draw_text(TEXT_X, 23, label3, DISP_FONT_SMALL);
 
-    /* Chrome: divider + status bar (re-applies stored status msg so it is
-     * never wiped by a screen transition that happens to race with a status
-     * update). */
     render_chrome();
-
     display_flush();
     s_qr_shown = slot;
 }
 
+/**
+ * Update only the status bar (bottom ~10 px) without redrawing the QR.
+ * Stores msg so render_qr_screen() re-applies it after a full clear.
+ *
+ * @param msg  Text to display, or NULL to clear.
+ */
 static void render_status_bar(const char *msg)
 {
-    /* Store the message so render_qr_screen() can re-apply it after a
-     * full-screen clear, preventing the race described in the header. */
     if (msg) {
         strncpy(s_status_msg, msg, sizeof(s_status_msg) - 1);
         s_status_msg[sizeof(s_status_msg) - 1] = '\0';
@@ -149,36 +161,28 @@ static void render_status_bar(const char *msg)
         s_status_msg[0] = '\0';
     }
 
-    display_clear_region(0, STATUS_LINE_Y, DISP_WIDTH, DISP_HEIGHT - STATUS_LINE_Y);
-    //display_draw_hline(0, STATUS_LINE_Y, DISP_WIDTH);
+    display_clear_region(0, STATUS_CLR_Y, DISP_WIDTH, DISP_HEIGHT - STATUS_CLR_Y);
     if (s_status_msg[0]) {
         display_draw_text(2, STATUS_TEXT_Y, s_status_msg, DISP_FONT_SMALL);
     }
     display_flush();
 }
 
+/**
+ * Full-screen "connecting" splash shown while STA attempts to join.
+ *
+ * @param ssid  Network name to display (truncated to 15 chars).
+ */
 static void render_connecting(const char *ssid)
 {
     char trunc[16];
     snprintf(trunc, sizeof(trunc), "%.15s", (ssid && ssid[0]) ? ssid : "...");
 
+    s_status_msg[0] = '\0'; /* connecting screen owns the full display */
     display_clear();
-    display_draw_text(0,  0, "Connecting:",   DISP_FONT_NORMAL);
-    //display_draw_hline(0, 12, DISP_WIDTH);
-    display_draw_text(0, 15, trunc,           DISP_FONT_MEDIUM);
-    display_draw_text(0, 36, "Please wait...", DISP_FONT_NORMAL);
-    display_flush();
-}
-
-static void render_connected(const char *ssid, const char *ip)
-{
-    char trunc[16];
-    snprintf(trunc, sizeof(trunc), "%.15s", ssid ? ssid : "");
-
-    display_clear();
-    display_draw_text(0,  0, ip,             DISP_FONT_BOLD);
-    //display_draw_hline(0, 13, DISP_WIDTH);
-    display_draw_text( 0, 16, trunc,         DISP_FONT_MEDIUM);
+    display_draw_text( 0,  0, "Connecting:",    DISP_FONT_NORMAL);
+    display_draw_text( 0, 15, trunc,            DISP_FONT_MEDIUM);
+    display_draw_text( 0, 36, "Please wait...", DISP_FONT_NORMAL);
     display_flush();
 }
 
@@ -190,15 +194,9 @@ void prov_ui_init(const char *ap_ssid, const char *ap_password)
 {
     ESP_LOGI(TAG, "Generating QR codes");
 
-    /* QR 1: WIFI: URI — phone camera auto-joins the AP */
-    s_qr_wifi_ok = qr_gen_wifi(ap_ssid, ap_password, s_qr_wifi);
-
-    /* QR 2: captive portal / setup page URL */
+    s_qr_wifi_ok  = qr_gen_wifi(ap_ssid, ap_password, s_qr_wifi);
     s_qr_setup_ok = qr_gen_url("http://" WIFI_MANAGER_AP_IP "/", s_qr_setup);
-
-    /* QR 3: robot control index page — generated with placeholder IP for
-     * now; updated in prov_ui_on_connected() when the real IP is known. */
-    s_qr_index_ok = false; /* not ready until we have an IP */
+    s_qr_index_ok = false; /* built in prov_ui_on_connected() once IP is known */
 
     if (!s_qr_wifi_ok)  ESP_LOGW(TAG, "WiFi QR generation failed");
     if (!s_qr_setup_ok) ESP_LOGW(TAG, "Setup URL QR generation failed");
@@ -206,13 +204,10 @@ void prov_ui_init(const char *ap_ssid, const char *ap_password)
 
 void prov_ui_show_boot(void)
 {
+    s_status_msg[0] = '\0';
     display_clear();
-    display_draw_text(14,  0, "WiFi Manager",       DISP_FONT_BOLD);
-    //display_draw_hline(0, 15, DISP_WIDTH);
-    display_draw_text( 4, 18, "WiFi Provisioning",  DISP_FONT_NORMAL);
-    display_draw_text(22, 32, "Starting...",         DISP_FONT_NORMAL);
-    //display_draw_hline(0, 53, DISP_WIDTH);
-    display_draw_text( 2, 55, "Heltec V3  ESP32-S3", DISP_FONT_SMALL);
+    display_draw_text(0,  0, "WiFi Manager",        DISP_FONT_BOLD);
+    display_draw_text(0, 18, "Starting...",   DISP_FONT_NORMAL);
     display_flush();
     ESP_LOGI(TAG, "Boot screen shown");
 }
@@ -225,30 +220,28 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx)
     switch (state) {
 
     case WIFI_MANAGER_STATE_CONNECTING_SAVED:
+        /* Overlay status on boot screen — no full redraw needed. */
         render_status_bar("Trying saved WiFi...");
         break;
 
     case WIFI_MANAGER_STATE_AP_STARTED:
-        /* Clear stale IP/SSID from any previous connection attempt. */
         s_ssid[0] = '\0';
         s_ip[0]   = '\0';
-
+        s_status_msg[0] = '\0'; /* clear any leftover boot/retry message */
         render_qr_screen(QR_WIFI,
-                         "Scan to Connect:",
+                         "Scan to join:",
                          AP_SSID,
                          AP_PASSWORD[0] ? AP_PASSWORD : "(open)");
         break;
 
     case WIFI_MANAGER_STATE_CLIENT_CONNECTED:
-        /* Client joined AP — show setup page QR so they can open the portal. */
         render_qr_screen(QR_SETUP,
-                         "Scan Again",
-                         "to setup:",
-                         "192.168.4.1");
+                         "Scan to setup:",
+                         "192.168.4.1",
+                         "");
         break;
 
     case WIFI_MANAGER_STATE_CLIENT_GONE:
-        /* Client left — back to WiFi join QR. */
         render_qr_screen(QR_WIFI,
                          "Join AP:",
                          AP_SSID,
@@ -260,27 +253,28 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx)
         break;
 
     case WIFI_MANAGER_STATE_STA_CONNECTING:
-        /* Pass s_ssid explicitly — it is populated by CREDS_RECEIVED just
-         * before this state fires, so it will be the SSID the user chose.
-         * If it is still empty (should not normally happen) show "...". */
         render_connecting(s_ssid[0] ? s_ssid : "...");
         break;
 
     case WIFI_MANAGER_STATE_STA_CONNECTED:
-        /* on_connected fires right after with ssid/ip — handled there. */
+        /* prov_ui_on_connected() fires immediately after with ssid + ip. */
         break;
 
     case WIFI_MANAGER_STATE_STA_FAILED:
-        /* Clear cached SSID so a stale name is never shown next round. */
         s_ssid[0] = '\0';
-        render_status_bar("Failed - check password");
+        /* Redraw the QR so the user can try again; status note at bottom. */
+        s_status_msg[0] = '\0';
+        render_qr_screen(QR_WIFI,
+                         "Join AP:",
+                         AP_SSID,
+                         AP_PASSWORD[0] ? AP_PASSWORD : "(open)");
+        render_status_bar("WiFi failed — retry?");
         break;
 
     case WIFI_MANAGER_STATE_ERROR:
-        /* Clear caches. */
         s_ssid[0] = '\0';
         s_ip[0]   = '\0';
-
+        s_status_msg[0] = '\0';
         display_clear();
         display_draw_text(28, 16, "ERROR",            DISP_FONT_BOLD);
         display_draw_text( 4, 36, "Check serial log", DISP_FONT_NORMAL);
@@ -298,28 +292,19 @@ void prov_ui_on_connected(const char *ssid, const char *ip, void *ctx)
     s_ssid[sizeof(s_ssid) - 1] = '\0';
     s_ip[sizeof(s_ip)     - 1] = '\0';
 
-    /* Generate the index-page QR now that we have the real IP address. */
     char index_url[32];
     snprintf(index_url, sizeof(index_url), "http://%s/", s_ip);
     s_qr_index_ok = qr_gen_url(index_url, s_qr_index);
     if (!s_qr_index_ok) {
-        ESP_LOGW(TAG, "Index page QR generation failed for URL: %s", index_url);
+        ESP_LOGW(TAG, "Index page QR generation failed: %s", index_url);
     }
 
-    /* Show the index-page QR so the user can connect immediately.
-     * Right side shows the IP in large text — also human-readable. */
-    render_qr_screen(QR_INDEX,
-                     "",
-                     s_ip,
-                     "");
-
+    s_status_msg[0] = '\0';
+    render_qr_screen(QR_INDEX, "", s_ip, "");
     ESP_LOGI(TAG, "Connected: SSID=%s  IP=%s", s_ssid, s_ip);
 }
 
 void prov_ui_tick(void)
 {
-    /* Intentional no-op for now.
-     * QR transitions are driven by wifi_manager state changes only.
-     * This hook exists for forward-compatibility: e.g. a future "is anyone
-     * browsing?" heartbeat check or slow cycling for specific deployments. */
+    /* No-op — transitions are driven by prov_ui_on_state_change(). */
 }
