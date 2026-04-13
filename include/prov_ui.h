@@ -39,6 +39,13 @@
 
 #include "wifi_manager.h"
 
+typedef enum
+{
+    QR_WIFI,
+    QR_SETUP,
+    QR_INDEX
+} qr_slot_t;
+
 /**
  * Initialise the provisioning UI and pre-generate the WiFi and setup QR codes.
  * CPU-intensive (~50 ms); call before wifi_manager_start() to avoid blocking

@@ -36,6 +36,11 @@
         <span class="sys-val" id="batt-val">—</span>
       </div>
       <div class="sys-stat">
+        <span class="sys-icon">🌡</span>
+        <span class="sys-label">Temp</span>
+        <span class="sys-val" id="temp-val">—</span>
+      </div>
+      <div class="sys-stat">
         <span class="sys-icon">⏱</span>
         <span class="sys-label">Latency</span>
         <span class="sys-val" id="latency-val">—</span>
@@ -50,20 +55,7 @@
       <div id="joystick-zone">
         <div id="joystick-knob"></div>
       </div>
-      <p class="key-hint">Drag to drive</p>
-    </section>
-
-    <!-- PC keyboard layout (hidden in touch mode) -->
-    <section class="keyboard-section" id="keyboard-section" hidden>
-      <div class="kbd-grid">
-        <div></div>
-        <button class="kbd-btn" id="kb-w" data-key="w">W</button>
-        <div></div>
-        <button class="kbd-btn" id="kb-a" data-key="a">A</button>
-        <button class="kbd-btn" id="kb-s" data-key="s">S</button>
-        <button class="kbd-btn" id="kb-d" data-key="d">D</button>
-      </div>
-      <p class="key-hint">Hold keys · release to stop</p>
+      <p class="key-hint">Drag to drive · WASD on keyboard</p>
     </section>
 
     <!-- Track telemetry -->
@@ -85,6 +77,26 @@
         <span class="speed-value" id="speed-right">0</span>
         <span class="drive-state" id="state-right">STOPPED</span>
         <span class="drive-dir"   id="dir-right">—</span>
+      </div>
+    </section>
+
+    <!-- Extended telemetry -->
+    <section class="ext-telemetry">
+      <div class="ext-card">
+        <span class="ext-label">Uptime</span>
+        <span class="ext-val" id="uptime-val">—</span>
+      </div>
+      <div class="ext-card">
+        <span class="ext-label">Heap free</span>
+        <span class="ext-val" id="heap-val">—</span>
+      </div>
+      <div class="ext-card">
+        <span class="ext-label">CPU load</span>
+        <span class="ext-val" id="cpu-val">—</span>
+      </div>
+      <div class="ext-card">
+        <span class="ext-label">Errors</span>
+        <span class="ext-val" id="err-val">0</span>
       </div>
     </section>
 
