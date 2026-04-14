@@ -30,6 +30,14 @@
  *              Generated at connection time once the IP is known.
  *              Format: http://<ip>/
  *
+ * Connected screen behaviour
+ * ──────────────────────────
+ *   When the STA is connected but no WebSocket client is open:
+ *     shows QR_INDEX + IP so the operator can navigate there.
+ *   When a WebSocket client connects (count > 0):
+ *     shows plain IP + SSID — the QR is no longer needed.
+ *   prov_ui_set_client_count() switches between these views.
+ *
  * Thread safety
  * ─────────────
  * All display_* calls happen on the wifi_manager event task, which runs
@@ -77,7 +85,7 @@ void prov_ui_show_boot(void);
  *   CREDS_RECEIVED     → status bar "Credentials saved"
  *   STA_CONNECTING     → "Connecting: <ssid>" full screen
  *   STA_CONNECTED      → (handled by on_connected below)
- *   STA_FAILED         → status bar "Failed – check password"
+ *   STA_FAILED         → QR_WIFI + status bar "WiFi failed — retry?"
  *   ERROR              → full-screen error
  */
 void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx);
@@ -85,13 +93,26 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx);
 /**
  * WiFi manager connected callback.
  * Pass as wifi_manager_config_t::on_connected.
- * Generates the index-page QR with the real IP and renders QR_INDEX.
+ * Generates the index-page QR with the real IP and renders the connected screen.
+ *
+ * @param ssid  Joined network name.
+ * @param ip    Assigned IPv4 as dotted-decimal string.
+ * @param ctx   User pointer (unused).
  */
 void prov_ui_on_connected(const char *ssid, const char *ip, void *ctx);
 
 /**
+ * Update the connected-screen view based on current WebSocket client count.
+ * Called by wifi_manager whenever a client connects or disconnects.
+ * No-op if the STA IP is not yet known (not in connected state).
+ *
+ * @param count  Current number of open WebSocket connections.
+ */
+void prov_ui_set_client_count(int count);
+
+/**
  * Tick — call from your main loop for API forward-compatibility.
- * Currently a no-op; reserved for future use (e.g. slow QR cycling,
- * heartbeat-based client-presence detection).
+ * Currently a no-op; all transitions are event-driven via on_state_change.
+ * Reserved for future use (e.g. slow QR cycling, heartbeat-based detection).
  */
 void prov_ui_tick(void);

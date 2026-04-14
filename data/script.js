@@ -1,7 +1,8 @@
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const MAX_PWM      = 1023;
+// Duty values from firmware are floats in range -1.0..+1.0
+// (tank-mix already applied; sign = direction)
 const DEADZONE     = 0.03;
 const SEND_RATE_MS = 50;     // 20 Hz command rate
 const RECONNECT_MS = 2000;
@@ -140,6 +141,7 @@ function connectWS()
         {
             const msg = JSON.parse(data);
             if (msg.left || msg.right) { pendingTelemetry = msg; scheduleRaf(); }
+            if (msg.estop  !== undefined) updateEstop(msg.estop, msg.resume);
             if (msg.rssi    !== undefined) updateRssi(msg.rssi);
             if (msg.battery !== undefined) updateBattery(msg.battery);
             if (msg.temp    !== undefined) updateTemp(msg.temp);
@@ -150,11 +152,6 @@ function connectWS()
         }
         catch (_) {}
     };
-}
-
-function sendCommand(msg)
-{
-    if (socket && socket.readyState === WebSocket.OPEN) socket.send(msg);
 }
 
 function schedulePing()
@@ -325,13 +322,17 @@ function scheduleRaf()
 
 function updateTrackCard(side, data)
 {
-    const pct = Math.round((data.speed / MAX_PWM) * 100);
-    dom.speeds[side].textContent    = data.speed;
-    dom.states[side].textContent    = data.state;
+    // data.duty is float -1..+1; bar shows absolute magnitude
+    const absD = Math.abs(data.duty || 0);
+    const pct  = Math.round(absD * 100);
+    dom.speeds[side].textContent    = pct + '%';
     dom.dirs[side].textContent      = data.forward ? '▲ FWD' : '▼ REV';
     dom.bars[side].style.width      = pct + '%';
-    dom.bars[side].style.background = stateColor(data.state);
-    dom.cards[side].dataset.state   = data.state;
+    // Derive a display state from duty magnitude
+    const state = absD > 0.01 ? 'RUNNING' : 'STOPPED';
+    dom.states[side].textContent    = state;
+    dom.bars[side].style.background = stateColor(state);
+    dom.cards[side].dataset.state   = state;
 }
 
 function stateColor(state)
@@ -339,6 +340,22 @@ function stateColor(state)
     if (state === 'RUNNING') return 'var(--clr-running)';
     if (state === 'RAMP_UP') return 'var(--clr-ramping)';
     return 'var(--clr-stopped)';
+}
+
+// ── E-stop / resume state ────────────────────────────────────────────────────
+function updateEstop(estop, resume)
+{
+    // Visual indicator: if estopped, flash the arm button red regardless of armed state
+    if (estop || resume)
+    {
+        dom.armBtn.classList.add('estopped');
+        dom.armLabel.textContent = resume ? 'SEND ZERO' : 'E-STOP';
+    }
+    else
+    {
+        dom.armBtn.classList.remove('estopped');
+        dom.armLabel.textContent = armed ? 'ARMED' : 'DISARMED';
+    }
 }
 
 // ── System health ─────────────────────────────────────────────────────────────

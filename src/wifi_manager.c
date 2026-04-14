@@ -37,10 +37,16 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "cJSON.h"
+#include "esp_timer.h"
+#include <math.h>
 
 #include "esp_vfs.h"
 #include "esp_littlefs.h"
 #include <dirent.h>
+
+#if MDNS_ENABLE
+#include "mdns.h"
+#endif
 
 static const char *TAG = "wifi_mgr";
 
@@ -144,6 +150,22 @@ static char                  s_sta_ssid[33] = {0};
 static char                  s_sta_pass[64] = {0};
 static httpd_handle_t        s_app_httpd   = NULL;
 static int                   s_ws_clients  = 0;  /* guarded by httpd task context */
+
+/* ── Motor command state — set by WS handler, read by telemetry ─────────────
+ * Stubs for the motor driver.  Replace with motor_set_input() /
+ * motor_get_state() calls once a motor driver component is added.
+ */
+typedef struct
+{
+    float cmd_x;           /* last x axis command, −1..+1               */
+    float cmd_y;           /* last y axis command, −1..+1               */
+    float duty_left;       /* mixed left duty, −1..+1                   */
+    float duty_right;      /* mixed right duty, −1..+1                  */
+    bool  estop_active;    /* emergency stop engaged                    */
+    bool  awaiting_resume; /* cleared only on zero-input after estop    */
+} MotorStub;
+
+static MotorStub s_motor = {0};
 
 /* ── DNS IP — parsed once from AP_GW_IP (config.h) at startup ───────────────*/
 static uint8_t s_gw_ip[4] = {192, 168, 4, 1};
@@ -517,6 +539,54 @@ static void http_server_stop(void)
 
 /* ── App server handlers ─────────────────────────────────────────────────────*/
 
+
+/* ── Telemetry ───────────────────────────────────────────────────────────────
+ * Sends a JSON telemetry frame to the current WebSocket client.
+ * Called on connect (initial state) and after drive commands.
+ * The 20 Hz send loop in script.js drives the ping, so we only push
+ * reactively here; add a periodic server-push timer if needed.
+ *
+ * JSON shape — must match script.js onmessage parser:
+ *   { "left":  { "duty": F, "forward": B },
+ *     "right": { "duty": F, "forward": B },
+ *     "uptime": N, "heap": N,
+ *     "estop": B, "resume": B }
+ */
+static void send_telemetry(httpd_req_t *req)
+{
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+
+    cJSON *left = cJSON_CreateObject();
+    cJSON_AddNumberToObject(left, "duty",    (double)s_motor.duty_left);
+    cJSON_AddBoolToObject  (left, "forward", s_motor.duty_left >= 0.0f);
+    cJSON_AddItemToObject(root, "left", left);
+
+    cJSON *right = cJSON_CreateObject();
+    cJSON_AddNumberToObject(right, "duty",    (double)s_motor.duty_right);
+    cJSON_AddBoolToObject  (right, "forward", s_motor.duty_right >= 0.0f);
+    cJSON_AddItemToObject(root, "right", right);
+
+    cJSON_AddNumberToObject(root, "uptime", (double)(esp_timer_get_time() / 1000000ULL));
+    cJSON_AddNumberToObject(root, "heap",   (double)esp_get_free_heap_size());
+    cJSON_AddBoolToObject  (root, "estop",  s_motor.estop_active);
+    cJSON_AddBoolToObject  (root, "resume", s_motor.awaiting_resume);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return;
+
+    httpd_ws_frame_t frame = {
+        .payload = (uint8_t *)json,
+        .len     = strlen(json),
+        .type    = HTTPD_WS_TYPE_TEXT,
+    };
+    httpd_ws_send_frame(req, &frame);
+    free(json);
+#endif
+}
+
 static esp_err_t handle_favicon(httpd_req_t *req)
     { httpd_resp_set_status(req, "204 No Content"); httpd_resp_send(req, NULL, 0); return ESP_OK; }
 
@@ -538,6 +608,7 @@ static esp_err_t handle_ws(httpd_req_t *req)
         ESP_LOGI(TAG, "WS client connected (total=%d)", s_ws_clients + 1);
         s_ws_clients++;
         prov_ui_set_client_count(s_ws_clients);
+        send_telemetry(req);  /* initial state on connect */
         return ESP_OK;
     }
 
@@ -604,12 +675,44 @@ static esp_err_t handle_ws(httpd_req_t *req)
             float x, y;
             if (sscanf(msg, "x:%f,y:%f", &x, &y) == 2)
             {
-                /* TODO: motor_drive(x, y); */
-                ESP_LOGD(TAG, "Drive: x=%.2f y=%.2f", x, y);
+                if (s_motor.estop_active)
+                {
+                    /* Awaiting-resume: accept zero-input to clear estop,
+                     * reject non-zero commands. */
+                    if (fabsf(x) < 0.001f && fabsf(y) < 0.001f)
+                    {
+                        s_motor.estop_active    = false;
+                        s_motor.awaiting_resume = false;
+                        ESP_LOGI(TAG, "E-stop cleared by zero-input resume");
+                    }
+                    else
+                    {
+                        ESP_LOGD(TAG, "Drive rejected — awaiting zero-input resume");
+                        send_telemetry(req);
+                        free(buf);
+                        return ESP_OK;
+                    }
+                }
+                /* Tank-drive mix: y=fwd/back, x=turn */
+                float left  = y + x;
+                float right = y - x;
+                float max_m = fmaxf(fabsf(left), fabsf(right));
+                if (max_m > 1.0f) { left /= max_m; right /= max_m; }
+                s_motor.cmd_x      = x;
+                s_motor.cmd_y      = y;
+                s_motor.duty_left  = left;
+                s_motor.duty_right = right;
+                /* TODO: motor_set_input(x, y); */
+                ESP_LOGD(TAG, "Drive: x=%.2f y=%.2f → L=%.2f R=%.2f", x, y, left, right);
+                send_telemetry(req);
             }
         }
         else if (strcmp(msg, "stop") == 0)
         {
+            s_motor.cmd_x      = 0.0f;
+            s_motor.cmd_y      = 0.0f;
+            s_motor.duty_left  = 0.0f;
+            s_motor.duty_right = 0.0f;
             /* TODO: motor_stop(); */
             ESP_LOGD(TAG, "Stop");
         }
@@ -653,6 +756,19 @@ void app_server_start(void)
     for (int i = 0; i < (int)(sizeof(app_routes)/sizeof(app_routes[0])); i++)
         httpd_register_uri_handler(s_app_httpd, &app_routes[i]);
     ESP_LOGI(TAG, "App server started on port 80");
+
+#if MDNS_ENABLE
+    if (mdns_init() == ESP_OK)
+    {
+        mdns_hostname_set(MDNS_HOSTNAME);
+        mdns_instance_name_set("MuleBot Robot");
+        ESP_LOGI(TAG, "mDNS: %s.local", MDNS_HOSTNAME);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "mDNS init failed");
+    }
+#endif
 }
 
 void app_server_stop(void)

@@ -93,7 +93,8 @@ bool display_init(void)
 
     ESP_LOGI(TAG, "Powering OLED via Vext (GPIO%d)", DISP_PIN_VEXT);
 
-    /* 1. Enable the OLED power rail. */
+    /* 1. Enable the OLED power rail.
+     * Heltec V3: GPIO36 HIGH = Vext ON.  (V3.1 variant is inverted — LOW = ON.) */
     gpio_output_set(DISP_PIN_VEXT, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -103,7 +104,12 @@ bool display_init(void)
     gpio_output_set(DISP_PIN_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* 3. Configure the ESP32 HAL (400 kHz I2C for faster flushes). */
+    /* 3. Configure the ESP32 HAL (400 kHz I2C for faster flushes).
+     * WARNING: esp_wifi_start() resets the I2C peripheral as a side-effect
+     * of radio bring-up.  display_init() must be called BEFORE wifi_manager_start()
+     * OR the HAL must be re-initialised after WiFi starts.  In this firmware,
+     * display_init() runs first (step 1 of app_main), so the sequence is safe.
+     * If you reorder boot steps, the OLED will go dark and I2C will error. */
     u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
     hal.sda              = DISP_PIN_SDA;
     hal.scl              = DISP_PIN_SCL;
@@ -139,6 +145,9 @@ bool display_init(void)
      * definitive s_available flag via display_set_available(). */
     s_available = true; /* optimistic default; health_monitor may correct this */
 
+    /* Use the top of the glyph bounding box as the y origin for DrawStr.
+     * Without this, y is the text baseline, which varies per font and makes
+     * pixel-exact layout impossible across mixed font sizes. */
     u8g2_SetFontPosTop(&s_u8g2);
     u8g2_ClearBuffer(&s_u8g2);
     u8g2_SendBuffer(&s_u8g2);
@@ -325,11 +334,10 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
 void display_flush(void)
 {
     DISPLAY_GUARD();
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    if (s_dirty) {
-        u8g2_SendBuffer(&s_u8g2);
-        s_dirty = false;
-    }
+    u8g2_SendBuffer(&s_u8g2);
+    s_dirty = false;
     xSemaphoreGive(s_mutex);
 }
 

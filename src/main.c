@@ -202,7 +202,7 @@ void app_main(void)
 
     /* Success — reset boot-loop counter. */
     s_restart_count = 0;
-
+    vTaskDelay(pdMS_TO_TICKS(500));//give i2c a moment to recover after wifi bring-up before the health monitor scans for the display
     /* 7. Initialise health monitor (I2C scan, peripheral map). */
     health_monitor_init();
 
