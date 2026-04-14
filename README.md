@@ -20,6 +20,42 @@ Connect via browser on your phone or PC.
 
 Once connected, the OLED shows the IP address. If no browser is open on `/`, a **QR code for the robot control page** is shown alongside the IP so you can navigate there instantly. The QR disappears and is replaced by a plain IP display once a WebSocket client connects.
 
+## PROJECT VISION
+
+Inspired by Meshtastic — but built for robotics, not messaging.
+Goal: a self-contained ESP-IDF foundation that handles the hard
+infrastructure (WiFi provisioning, OTA, captive portal, health
+monitoring, display, WebSocket control) so that new use cases
+can be bootstrapped quickly by swapping a single frontend template
+and implementing a thin application task.
+
+No cloud required. No subscriptions. Optional cloud integrations
+are fine as an add-on.
+
+Target use cases (all share the same core):
+  - Realtime RC control (tank, rover, arm)
+  - Device-to-device control (direct or through a gateway)
+  - Sequenced command playback (pre-arranged move lists)
+  - Autonomous with periodic status push (e.g. chicken coop door → Home Assistant)
+  - Smart home platform integration (Home Assistant, Google, Amazon)
+  - Custom Unity / game-engine app as frontend
+
+## ARCHITECTURE NOTES (decisions made, rationale preserved)
+
+File system:    LittleFS only. SPIFFS is deprecated.
+Framework:      ESP-IDF 5.x + PlatformIO as developer shell only.
+                PlatformIO library manager is NOT used for components.
+Libraries:      Vendored as git submodules in components/ except
+                u8g2_hal which is downloaded manually due to S3 patches.
+Config split:   sdkconfig.defaults → silicon/driver settings.
+                platformio.ini → build environment metadata.
+                config.h → application constants (baked in at compile time).
+                LittleFS JSON → runtime user settings (survives OTA).
+Code style:     Allman braces, concise comments, @param on every function.
+UI philosophy:  All actions independent of display/web UI.
+                Motor runs if OLED dead. Motor runs if browser disconnected.
+                UI is telemetry + convenience, not a dependency.
+
 ### Re-provisioning
 
 Hold the **USER button (GPIO0)** for 3 seconds at boot → credentials erased → portal starts.
