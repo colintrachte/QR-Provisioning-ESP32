@@ -1,3 +1,4 @@
+Regarding comments in the code, for all iterations: trim comments that restate the function name, keep any comment that explains a constraint, a tradeoff, or a platform quirk.
 ───────────────────────────────────────────────────────────────
  DONE
 ───────────────────────────────────────────────────────────────
