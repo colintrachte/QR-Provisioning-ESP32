@@ -1,3 +1,6 @@
+#esp-idf components
+managed_components/
+
 # PlatformIO build output
 .pio/
 
