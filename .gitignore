@@ -1,5 +1,6 @@
 #esp-idf components
 managed_components/
+dependencies.lock
 
 # PlatformIO build output
 .pio/
