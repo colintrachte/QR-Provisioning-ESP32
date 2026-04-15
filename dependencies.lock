@@ -9,13 +9,21 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.11.0
+  espressif/qrcode:
+    component_hash: 31e70991ce22f28d73a4386417fc9c0993f61e1aab1832474fd9e3db8da9dcbd
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.2.0
   idf:
     source:
       type: idf
     version: 5.5.3
 direct_dependencies:
 - espressif/mdns
+- espressif/qrcode
 - idf
-manifest_hash: 3dd7e0ff2205fbd9e6220fc0fcbc6a8f0866ba77b41b13cdf1e27657be9243e3
+manifest_hash: 8a4f198a78e8e44c33162d283d91de630328bfe1bed9aa3a6e1322f8fbd38650
 target: esp32s3
 version: 2.0.0
