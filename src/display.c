@@ -167,6 +167,29 @@ void display_set_available(bool available)
     }
 }
 
+void display_reinit_i2c(void)
+{
+    if (!s_initialized) return;
+
+    /* Re-run only the HAL init. The display panel retains its GDDRAM contents
+     * and power state — only the ESP32 peripheral side was reset by WiFi. */
+    u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
+    hal.sda           = DISP_PIN_SDA;
+    hal.scl           = DISP_PIN_SCL;
+    hal.reset         = -1;
+    hal.i2c_num       = I2C_NUM_0;
+    hal.i2c_clk_speed = 400000;
+    u8g2_esp32_hal_init(hal);
+
+    /* Re-send the init sequence so the controller is in a known state.
+     * u8g2_InitDisplay() does not clear GDDRAM — the previous image stays. */
+    u8g2_InitDisplay(&s_u8g2);
+    u8g2_SetPowerSave(&s_u8g2, 0);
+    u8g2_SetFontPosTop(&s_u8g2);
+
+    ESP_LOGI("display", "I2C HAL re-initialised after WiFi startup");
+}
+
 bool display_is_available(void) { return s_available; }
 
 void display_power(bool on)

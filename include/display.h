@@ -92,6 +92,14 @@ bool display_is_available(void);
  */
 void display_set_available(bool available);
 
+/**
+ * Re-synchronise the u8g2 HAL with a freshly installed I2C driver.
+ * Call after i2c_driver_install() has been called post-WiFi startup.
+ * Does NOT toggle Vext or RST — the OLED panel stays powered.
+ * No-op if display was never successfully initialised.
+ */
+void display_reinit_i2c(void);
+
 /* ── Escape hatch ───────────────────────────────────────────────────────────*/
 
 /**
