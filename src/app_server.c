@@ -142,7 +142,11 @@ static void ws_client_remove(int fd)
 
 static void dispatch(httpd_req_t *req, const char *msg)
 {
+    /* Every recognised message resets the command watchdog, including ping.
+     * This keeps the robot alive as long as the browser tab is open and
+     * reachable — even if the user isn't actively driving. */
     if (strcmp(msg, "ping") == 0) {
+        ctrl_drive_feed_watchdog();
         httpd_ws_frame_t pong = {
             .type    = HTTPD_WS_TYPE_TEXT,
             .payload = (uint8_t *)"pong",
@@ -152,25 +156,30 @@ static void dispatch(httpd_req_t *req, const char *msg)
         return;
     }
     if (strcmp(msg, "arm") == 0) {
+        ctrl_drive_feed_watchdog();
         ctrl_drive_set_armed(true);
         o_led_blink(LED_PATTERN_HEARTBEAT);
         return;
     }
     if (strcmp(msg, "disarm") == 0) {
+        ctrl_drive_feed_watchdog();
         ctrl_drive_set_armed(false);
         o_led_blink(LED_PATTERN_SLOW_BLINK);
         return;
     }
     if (strcmp(msg, "stop") == 0) {
+        ctrl_drive_feed_watchdog();
         ctrl_drive_set_axes(0.0f, 0.0f);
         return;
     }
     if (strncmp(msg, "led:", 4) == 0) {
+        ctrl_drive_feed_watchdog();
         o_led_set(strtof(msg + 4, NULL));
         return;
     }
     float x = 0.0f, y = 0.0f;
     if (sscanf(msg, "x:%f,y:%f", &x, &y) == 2) {
+        ctrl_drive_feed_watchdog();
         ctrl_drive_set_axes(x, y);
         return;
     }
@@ -288,6 +297,7 @@ void app_server_push_telemetry(void)
         esp_err_t err = httpd_ws_send_frame_async(s_httpd, live[i], &frame);
         if (err != ESP_OK) {
             /* Prune the dead fd */
+            int count = 0;
             xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
             for (int j = 0; j < MAX_WS_CLIENTS; j++) {
                 if (s_ws_fds[j] == live[i]) {
@@ -296,8 +306,11 @@ void app_server_push_telemetry(void)
                     break;
                 }
             }
+            count = s_ws_count;
             xSemaphoreGive(s_ws_mutex);
-            ESP_LOGD(TAG, "Pruned dead WS fd=%d", live[i]);
+            prov_ui_set_client_count(count);
+            ctrl_drive_emergency_stop();
+            ESP_LOGD(TAG, "Pruned dead WS fd=%d (total=%d)", live[i], count);
         }
     }
 }

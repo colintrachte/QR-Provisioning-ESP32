@@ -195,15 +195,39 @@ h1 {
 .drive-state { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--clr-muted); }
 .drive-dir   { font-size: 0.7rem; color: var(--clr-accent); }
 
-/* ── Extended telemetry ─────────────────────────────────────────────────────*/
-.ext-telemetry {
-  display:               grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap:                   8px;
+/* ── Diagnostics drawer ─────────────────────────────────────────────────────*/
+.diag-drawer {
+  background:    var(--clr-surface);
+  border:        1px solid var(--clr-border);
+  border-radius: var(--radius-md);
+  overflow:      hidden;
 }
 
-.ext-card {
-  display:        flex;
+.diag-summary {
+  padding:       9px 14px;
+  font-size:     0.72rem;
+  font-weight:   600;
+  color:         var(--clr-muted);
+  letter-spacing:0.04em;
+  cursor:        pointer;
+  list-style:    none;
+  display:       flex;
+  align-items:   center;
+  gap:           6px;
+  user-select:   none;
+}
+.diag-summary::-webkit-details-marker { display: none; }
+.diag-summary::before { content: '▶'; font-size: 0.6rem; transition: transform 0.15s; }
+.diag-drawer[open] .diag-summary::before { transform: rotate(90deg); }
+
+.diag-grid {
+  display:               grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap:                   8px;
+  padding:               0 10px 10px;
+}
+
+/* ── Extended card (shared by diag drawer) ──────────────────────────────────*/.ext-card {  display:        flex;
   flex-direction: column;
   gap:            4px;
   padding:        10px 12px;
@@ -219,7 +243,7 @@ h1 {
 
 @media (max-width: 380px)
 {
-  .ext-telemetry { grid-template-columns: repeat(2, 1fr); }
+  .diag-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-height: 500px) and (orientation: landscape)
@@ -231,5 +255,5 @@ h1 {
   .joystick-section { flex: 0 0 auto; }
   #joystick-zone    { width: min(180px, 40vw); height: min(180px, 40vw); }
   .telemetry-grid   { flex: 1; grid-template-columns: 1fr; }
-  .ext-telemetry    { flex: 1 1 100%; grid-template-columns: repeat(4, 1fr); }
+  .diag-drawer      { flex: 1 1 100%; }
 }

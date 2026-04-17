@@ -21,6 +21,7 @@
  */
 void ctrl_drive_init(void);
 
+void ctrl_drive_feed_watchdog(void);
 /**
  * Set target joystick axes. Safe to call from the WebSocket handler task.
  * Axes are applied on the next ctrl_drive_tick().

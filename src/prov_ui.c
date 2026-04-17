@@ -37,30 +37,60 @@ static char    s_ip[16]         = {0};
 static char    s_status_msg[32] = {0};
 static int     s_ws_clients     = 0;   /* set by prov_ui_set_client_count()  */
 
-/* ── Layout ─────────────────────────────────────────────────────────────────*/
+/* ── Layout ─────────────────────────────────────────────────────────────────
+ *
+ * AP / setup screens (QR_WIFI, QR_SETUP):
+ *   QR on the left half (≤60 px), text labels on the right (x=62+).
+ *   These QR codes encode short strings and fit easily in ≤60 px.
+ *
+ * Connected screen (QR_INDEX):
+ *   QR centred at top, IP address on its own full-width line below.
+ *   The IP can be up to 15 chars (e.g. "192.168.100.200") — we need the
+ *   full 128 px width to avoid clipping; DISP_FONT_SMALL is ~6 px/char so
+ *   15 chars = 90 px, which fits comfortably at x=0.
+ *   We do NOT use the status-bar chrome row on this screen.
+ */
 #define QR_X          0
 #define QR_Y          0
-#define QR_PANEL_W   64   /* max px wide for QR; TEXT_X must exceed this     */
-#define TEXT_X       68
+#define QR_PANEL_W   60   /* max px wide for side-by-side screens           */
+#define TEXT_X       62   /* right column for AP/setup screens               */
 #define STATUS_CLR_Y 54
 #define STATUS_TEXT_Y 56
 
+/* Max pixel size the QR can occupy when displayed full-width (INDEX screen).
+ * We reserve IP_ROW_H pixels at the bottom for the IP address. */
+#define IP_ROW_H     12   /* height of the IP address row in px              */
+#define QR_INDEX_MAX (DISP_HEIGHT - IP_ROW_H)   /* 52 px for 128×64 panel  */
+
 /* ── Scale selection ────────────────────────────────────────────────────────
- * Returns the largest scale (3→2→1) where modules*scale + quiet*2 fits the
- * QR panel and display height.  Falls back to 1 with a warning if nothing
- * fits — the image will be clipped but display_draw_qr() already logs that. */
-static uint8_t best_qr_scale(const uint8_t *qrcode)
+ * Returns the largest scale (3→2→1) where modules*scale + quiet*2 fits
+ * within max_px in both dimensions.  Falls back to 1 with a warning. */
+static uint8_t best_qr_scale_max(const uint8_t *qrcode, int max_px)
 {
     uint8_t modules = qrcodegen_getSize(qrcode);
     for (uint8_t s = 3; s >= 1; s--)
     {
         uint8_t quiet    = (s >= 3) ? 0 : (s * 2);
         uint8_t total_px = modules * s + quiet * 2;
-        if (total_px <= QR_PANEL_W && total_px <= DISP_HEIGHT)
+        if (total_px <= max_px)
             return s;
     }
-    ESP_LOGW(TAG, "best_qr_scale: QR (%d modules) too large for panel — using scale 1", modules);
+    ESP_LOGW(TAG, "best_qr_scale: QR (%d modules) too large — using scale 1", modules);
     return 1;
+}
+
+/* Side-by-side screens: fit within QR_PANEL_W × DISP_HEIGHT */
+static uint8_t best_qr_scale(const uint8_t *qrcode)
+{
+    int lim = QR_PANEL_W < DISP_HEIGHT ? QR_PANEL_W : DISP_HEIGHT;
+    return best_qr_scale_max(qrcode, lim);
+}
+
+/* Index (connected) screen: fit within full width × QR_INDEX_MAX height */
+static uint8_t best_qr_scale_index(const uint8_t *qrcode)
+{
+    int lim = DISP_WIDTH < QR_INDEX_MAX ? DISP_WIDTH : QR_INDEX_MAX;
+    return best_qr_scale_max(qrcode, lim);
 }
 
 /* ── Internal renderers ─────────────────────────────────────────────────────*/
@@ -158,24 +188,49 @@ static void render_connecting(const char *ssid)
 }
 
 /* Redraws the connected screen based on current client count.
- * With no browser connected: show QR + IP so the user can navigate there.
- * With a client present: show just the IP — they're already in the UI. */
+ *
+ * No client: QR centred at top, IP address on a full-width line below it.
+ *   The IP must not be word-wrapped or split; we use the full 128 px row.
+ *   DISP_FONT_SMALL renders at ~6 px/char — 15 chars (worst-case IP) = 90 px.
+ *
+ * Client present: plain IP + SSID, QR omitted — the user is already there.
+ */
 static void render_connected(void)
 {
     if (!s_ip[0]) return;
 
+    display_clear();
+
     if (s_ws_clients > 0)
     {
-        display_clear();
         display_draw_text(0,  0, "Connected:",  DISP_FONT_NORMAL);
         display_draw_text(0, 16, s_ip,          DISP_FONT_MEDIUM);
         display_draw_text(0, 36, s_ssid,        DISP_FONT_SMALL);
-        display_flush();
     }
     else
     {
-        render_qr_screen(QR_INDEX, "Scan to open:", s_ip, "");
+        /* QR in upper portion, IP address on its own row below — no side column. */
+        if (s_qr_index_ok)
+        {
+            int scale   = best_qr_scale_index(s_qr_index);
+            int qr_size = qrcodegen_getSize(s_qr_index) * scale;
+            int qr_x    = (DISP_WIDTH - qr_size) / 2;   /* centre horizontally */
+            ESP_LOGD(TAG, "render_connected: QR scale=%d modules=%d x=%d",
+                     scale, qrcodegen_getSize(s_qr_index), qr_x);
+            display_draw_qr(qr_x, QR_Y, scale, s_qr_index);
+        }
+        else
+        {
+            display_draw_text(0, QR_Y, "Scan to open:", DISP_FONT_SMALL);
+        }
+
+        /* IP on a dedicated full-width row — guaranteed no wrapping. */
+        int ip_y = DISP_HEIGHT - IP_ROW_H;
+        display_draw_hline(0, ip_y - 1, DISP_WIDTH);
+        display_draw_text(0, ip_y, s_ip, DISP_FONT_SMALL);
     }
+
+    display_flush();
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────────*/
