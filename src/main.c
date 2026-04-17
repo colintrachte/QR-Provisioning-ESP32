@@ -3,28 +3,29 @@
  *
  * Startup sequence
  * ────────────────
- *  1. display_init()           Power OLED, send init commands.
- *  2. prov_ui_show_boot()      Render boot splash immediately.
- *  3. prov_ui_init()           Pre-generate WiFi + URL QR codes (~50 ms).
- *  4. reprovision check        Non-blocking GPIO poll over REPROV_HOLD_MS.
- *  5. wifi_manager_start()     Try stored credentials; fall back to portal.
- *  6. Main loop                Calls prov_ui_tick().  Once connected, spawns
- *                              a dedicated FreeRTOS app_task so heavy robot
- *                              logic never jitters the UI tick timing.
+ *  1.  display_init()          Power OLED, send init commands.
+ *  2.  o_led_init()            Configure LEDC on GPIO35.
+ *  3.  i_battery_init()        Configure ADC1_CH0.
+ *  4.  prov_ui_show_boot()     Render boot splash.
+ *  5.  prov_ui_init()          Pre-generate WiFi + URL QR codes (~50 ms).
+ *  6.  reprovision check       Non-blocking GPIO poll over REPROV_HOLD_MS.
+ *  7.  wifi_manager_start()    Try stored credentials; fall back to portal.
+ *  8.  i_sensors_init()        Re-init I2C post-WiFi; scan bus; map peripherals.
+ *                              Calls display_reinit_i2c() internally.
+ *  9.  ctrl_drive_init()       Init motor driver hardware.
+ *  10. health_monitor_init()   Cache peripheral map; baseline telemetry.
+ *  11. app_server_start()      HTTP file server + WebSocket on port 80.
+ *  12. Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
+ *                              Spawns app_task once STA is connected.
  *
  * Boot-loop guard
  * ───────────────
- *  A persistent retry counter in RTC memory tracks consecutive
- *  wifi_manager_start() failures.  After WIFI_MAX_RESTART_ATTEMPTS the
- *  firmware enters "safe mode": it stays on screen showing a diagnostic
- *  message rather than restarting indefinitely.
+ *  RTC_DATA_ATTR restart counter. After WIFI_MAX_RESTART_ATTEMPTS the
+ *  firmware enters safe mode: shows a diagnostic screen and halts.
  *
  * Re-provision button
  * ───────────────────
- *  Hold GPIO0 (USER_SW / BOOT button on Heltec V3) for REPROV_HOLD_MS ms
- *  on power-up to erase stored credentials and force the portal to open.
- *  The check is non-blocking: the display and watchdog continue running
- *  during the hold window.
+ *  Hold GPIO0 for REPROV_HOLD_MS at power-up to erase stored credentials.
  */
 
 #include "config.h"
@@ -32,7 +33,12 @@
 #include "qr_gen.h"
 #include "wifi_manager.h"
 #include "prov_ui.h"
+#include "i_sensors.h"
+#include "i_battery.h"
+#include "o_led.h"
+#include "ctrl_drive.h"
 #include "health_monitor.h"
+#include "app_server.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
@@ -42,17 +48,11 @@
 
 static const char *TAG = "main";
 
-/* ── Boot-loop guard ────────────────────────────────────────────────────────
- * RTC_DATA_ATTR survives deep sleep and software resets but is cleared by
- * a power-on reset, which is exactly what we want: a power cycle resets
- * the counter while a crash-induced restart increments it.
- */
+/* Survives deep sleep and software resets; cleared by power-on reset */
 RTC_DATA_ATTR static int s_restart_count = 0;
 
-/* ── Re-provision button ────────────────────────────────────────────────────
- * Non-blocking poll: samples the button every 50 ms for REPROV_HOLD_MS total.
- * The display and FreeRTOS tick continue running throughout.
- */
+/* ── Re-provision button ────────────────────────────────────────────────────*/
+
 static bool reprovision_requested(void)
 {
     gpio_config_t io = {
@@ -64,35 +64,32 @@ static bool reprovision_requested(void)
     };
     gpio_config(&io);
 
-    if (gpio_get_level(REPROV_GPIO) != 0) {
-        return false; /* button not held at all — fast path */
-    }
+    if (gpio_get_level(REPROV_GPIO) != 0) return false;
 
-    ESP_LOGI(TAG, "BOOT held — polling for %d ms to confirm re-provision", REPROV_HOLD_MS);
+    ESP_LOGI(TAG, "BOOT held — polling for %d ms", REPROV_HOLD_MS);
+    o_led_blink(LED_PATTERN_FAST_BLINK);  /* visual feedback during hold */
 
-    const int poll_interval_ms = 50;
-    const int polls = REPROV_HOLD_MS / poll_interval_ms;
-
-    for (int i = 0; i < polls; i++) {
-        vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+    const int poll_ms = 50;
+    for (int i = 0; i < REPROV_HOLD_MS / poll_ms; i++) {
+        vTaskDelay(pdMS_TO_TICKS(poll_ms));
         if (gpio_get_level(REPROV_GPIO) != 0) {
-            ESP_LOGI(TAG, "BOOT released early — re-provision cancelled");
+            ESP_LOGI(TAG, "BOOT released early — cancelled");
+            o_led_set(0.0f);
             return false;
         }
     }
 
-    ESP_LOGW(TAG, "Re-provision confirmed after %d ms hold", REPROV_HOLD_MS);
+    ESP_LOGW(TAG, "Re-provision confirmed");
+    o_led_set(1.0f);   /* solid on while erasing */
     return true;
 }
 
-/* ── Safe mode ──────────────────────────────────────────────────────────────
- * Called when wifi_manager_start() has failed WIFI_MAX_RESTART_ATTEMPTS times
- * in a row.  Displays a persistent diagnostic screen and halts so the user
- * can power-cycle or reflash rather than watch an infinite reboot loop.
- */
+/* ── Safe mode ──────────────────────────────────────────────────────────────*/
+
 static void enter_safe_mode(const char *reason)
 {
-    ESP_LOGE(TAG, "SAFE MODE: %s (restart count=%d)", reason, s_restart_count);
+    ESP_LOGE(TAG, "SAFE MODE: %s (restart_count=%d)", reason, s_restart_count);
+    o_led_blink(LED_PATTERN_DOUBLE_BLINK);  /* distinctive pattern */
 
     display_clear();
     display_draw_text(20,  0, "SAFE MODE",         DISP_FONT_BOLD);
@@ -104,58 +101,57 @@ static void enter_safe_mode(const char *reason)
     display_draw_text( 2, 55, "to recover",        DISP_FONT_SMALL);
     display_flush();
 
-    /* Halt here. The watchdog is not fed — a WDT reset would re-enter safe
-     * mode anyway since s_restart_count persists.  Use an infinite delay so
-     * FreeRTOS is not starved (other tasks, if any, keep running). */
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
+    while (1) vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
 /* ── Application task ───────────────────────────────────────────────────────
- * Spawned once STA is connected.  Keeps heavy robot logic off the UI tick.
- * Replace the body with your robot_app_tick() or sensor_read() calls.
+ * Spawned once STA is connected. Keeps robot logic off the UI tick.
  */
 static void app_task(void *arg)
 {
-    ESP_LOGI(TAG, "app_task started");
     (void)arg;
+    ESP_LOGI(TAG, "app_task started");
+
+    uint32_t last_telemetry_ms = 0;
 
     while (1) {
-        /* ── Your robot application code goes here ──────────────────────
-         * This task runs at whatever rate your application needs.
-         * The provisioning UI tick in app_main() runs independently.
-         *
-         * Examples:
-         *   sensor_read_and_publish();
-         *   motor_controller_tick();
-         *   health_monitor_tick();    <- already called below; shown for
-         *                               illustration only
-         */
-        vTaskDelay(pdMS_TO_TICKS(10));
+        ctrl_drive_tick();
+        i_sensors_tick();
+
+        /* Push telemetry at 5 Hz — enough for smooth UI without flooding */
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (now_ms - last_telemetry_ms >= 200) {
+            last_telemetry_ms = now_ms;
+            app_server_push_telemetry();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));   /* 100 Hz tick; motor ramp uses this */
     }
 }
 
-/* ── Application entry point ────────────────────────────────────────────────*/
+/* ── Entry point ────────────────────────────────────────────────────────────*/
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Robot Provisioning Firmware ===");
-    ESP_LOGI(TAG, "Board: Heltec WiFi LoRa 32 V3 (ESP32-S3)");
-    ESP_LOGI(TAG, "Restart count (this power cycle): %d", s_restart_count);
+    ESP_LOGI(TAG, "=== Robot Firmware — Heltec WiFi LoRa 32 V3 ===");
+    ESP_LOGI(TAG, "Restart count: %d", s_restart_count);
 
-    /* 1. Display first — every subsequent step can show status. */
+    /* 1. Display: must be first so every subsequent step can show status. */
     display_init();
 
-    /* 2. Boot splash — immediate visual feedback. */
-    prov_ui_show_boot();
+    /* 2. LED: second so reprovision check and safe mode can blink patterns. */
+    o_led_init();
+    o_led_blink(LED_PATTERN_SLOW_BLINK);  /* "booting" indicator */
 
-    /* 3. QR pre-generation (CPU-bound, ~50 ms) before WiFi init. */
+    /* 3. Battery ADC: safe before WiFi; ADC1 is unaffected by radio init. */
+    i_battery_init();
+
+    /* 4–5. UI: splash then QR pre-generation. */
+    prov_ui_show_boot();
     prov_ui_init(AP_SSID, AP_PASSWORD);
 
-    /* 4. Non-blocking re-provision check. */
+    /* 6. Re-provision check. */
     if (reprovision_requested()) {
-        ESP_LOGW(TAG, "Re-provision confirmed — erasing credentials");
         wifi_manager_erase_credentials();
 
         display_clear();
@@ -164,19 +160,17 @@ void app_main(void)
         display_flush();
         vTaskDelay(pdMS_TO_TICKS(1500));
 
-        /* A re-provision request is intentional — reset the boot-loop counter
-         * so the subsequent restart does not count as a failure. */
         s_restart_count = 0;
         esp_restart();
     }
 
-    /* 5. Boot-loop guard — enter safe mode if we have been restarting repeatedly. */
+    /* Boot-loop guard. */
     if (s_restart_count >= WIFI_MAX_RESTART_ATTEMPTS) {
         enter_safe_mode("Too many failed starts");
         /* Does not return. */
     }
 
-    /* 6. WiFi manager start. */
+    /* 7. WiFi. */
     wifi_manager_config_t cfg = WIFI_MANAGER_CONFIG_DEFAULT();
     cfg.ap_ssid         = AP_SSID;
     cfg.ap_password     = AP_PASSWORD;
@@ -184,13 +178,15 @@ void app_main(void)
     cfg.on_state_change = prov_ui_on_state_change;
     cfg.on_connected    = prov_ui_on_connected;
 
+    o_led_blink(LED_PATTERN_FAST_BLINK);  /* "connecting" indicator */
+
     esp_err_t err = wifi_manager_start(&cfg);
     if (err != ESP_OK) {
         s_restart_count++;
         ESP_LOGE(TAG, "wifi_manager_start failed (%d/%d): %s",
-                 s_restart_count, WIFI_MAX_RESTART_ATTEMPTS,
-                 esp_err_to_name(err));
+                 s_restart_count, WIFI_MAX_RESTART_ATTEMPTS, esp_err_to_name(err));
 
+        o_led_blink(LED_PATTERN_DOUBLE_BLINK);
         display_clear();
         display_draw_text(4, 16, "WiFi init failed!",  DISP_FONT_NORMAL);
         display_draw_text(4, 28, esp_err_to_name(err), DISP_FONT_SMALL);
@@ -200,28 +196,36 @@ void app_main(void)
         esp_restart();
     }
 
-    /* Success — reset boot-loop counter. */
     s_restart_count = 0;
-    vTaskDelay(pdMS_TO_TICKS(500));//give i2c a moment to recover after wifi bring-up before the health monitor scans for the display
-    /* 7. Initialise health monitor (I2C scan, peripheral map). */
+
+    /* 8. I2C re-init after WiFi. No delay needed — re-init is explicit.
+     *    i_sensors_init() calls display_reinit_i2c() before scanning. */
+    i_sensors_init();
+
+    /* 9. Motor driver. */
+    ctrl_drive_init();
+
+    /* 10. Health monitor. */
     health_monitor_init();
 
-    /* 8. Main loop — UI tick + health checks.  Motor control runs in app_task. */
-    ESP_LOGI(TAG, "Entering main loop");
+    // 11. App server (HTTP file server + WebSocket) is managed by wifi manager's STA state machine;
 
+    o_led_blink(LED_PATTERN_HEARTBEAT);  /* "running" indicator */
+
+    /* 12. Main loop — 10 Hz UI tick + health checks. */
+    ESP_LOGI(TAG, "Entering main loop");
     bool app_task_spawned = false;
 
     while (1) {
-        prov_ui_tick(); /* non-blocking; redraws only when state changes */
-
-        health_monitor_tick(); /* RSSI checks, peripheral status, etc. */
+        prov_ui_tick();
+        health_monitor_tick();
 
         if (wifi_manager_is_connected() && !app_task_spawned) {
             ESP_LOGI(TAG, "STA connected — spawning app_task");
-            xTaskCreate(app_task, "app_task", 4096, NULL, 3, NULL);
+            xTaskCreate(app_task, "app_task", 4096, NULL, 5, NULL);
             app_task_spawned = true;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(MAIN_LOOP_MS)); /* 10 Hz UI tick */
+        vTaskDelay(pdMS_TO_TICKS(MAIN_LOOP_MS));
     }
 }

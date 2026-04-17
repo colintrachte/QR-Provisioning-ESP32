@@ -21,8 +21,13 @@
  *  (e.g. disconnected cable).  All draw calls become silent no-ops in that
  *  state — the rest of the firmware keeps running normally.
  *  Call display_is_available() to query whether the OLED is present.
- *  The health_monitor calls display_set_available() after its I2C scan
+ *  i_sensors_init() calls display_set_available() after its I2C scan
  *  to set the definitive hardware-detected flag.
+ *
+ * I2C driver
+ * ──────────
+ *  Uses driver/i2c_master.h (ESP-IDF 5.x new API) exclusively.
+ *  The legacy driver/i2c.h is not used anywhere in this module.
  *
  * Pin assignments — Heltec WiFi LoRa 32 V3
  * ──────────────────────────────────────────
@@ -31,21 +36,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "esp_err.h"
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
-
-/* ── Hardware pin assignments ───────────────────────────────────────────────*/
-#define DISP_PIN_SDA   17
-#define DISP_PIN_SCL   18
-#define DISP_PIN_RST   21
-#define DISP_PIN_VEXT  36
-
-/** I2C address in the left-shifted form that u8g2 expects (0x3C << 1). */
-#define DISP_I2C_ADDR  0x78
-
-/* ── Panel geometry ─────────────────────────────────────────────────────────*/
-#define DISP_WIDTH   128
-#define DISP_HEIGHT   64
 
 /* ── Font aliases ───────────────────────────────────────────────────────────*/
 #define DISP_FONT_SMALL   u8g2_font_5x7_tf
@@ -72,10 +65,6 @@ void display_contrast(uint8_t level);
 /**
  * Set the draw colour used by subsequent draw calls.
  * @param color  1 = white (lit pixels), 0 = black (dark pixels / erase).
- *
- * The colour persists until changed again.  display_clear_region() always
- * uses black regardless of this setting, as erasure is always black-on-OLED.
- *
  * Default: 1 (white).
  */
 void display_set_color(uint8_t color);
@@ -86,27 +75,31 @@ void display_set_color(uint8_t color);
 bool display_is_available(void);
 
 /**
- * Called by health_monitor after its I2C bus scan.
+ * Called by i_sensors_init() after its I2C bus scan.
  * Sets the definitive hardware-detected available flag.
  * If available=false, all subsequent draw calls become no-ops.
  */
 void display_set_available(bool available);
 
 /**
- * Re-synchronise the u8g2 HAL with a freshly installed I2C driver.
- * Call after i2c_driver_install() has been called post-WiFi startup.
- * Does NOT toggle Vext or RST — the OLED panel stays powered.
- * No-op if display was never successfully initialised.
+ * Re-synchronise the u8g2 HAL with a freshly created I2C master bus.
+ *
+ * Call after i_sensors_init() has called i2c_new_master_bus() post-WiFi.
+ * Internally calls u8g2_esp32_hal_reinit_bus() to rebuild bus/device handles,
+ * then re-sends the SSD1306 init sequence (GDDRAM contents preserved).
+ *
+ * @return ESP_OK on success.
+ *         ESP_ERR_INVALID_STATE if display_init() has not run yet.
+ *         Propagated esp_err_t from u8g2_esp32_hal_reinit_bus() on failure.
  */
-void display_reinit_i2c(void);
+esp_err_t display_reinit_i2c(void);
 
 /* ── Escape hatch ───────────────────────────────────────────────────────────*/
 
 /**
  * Return the raw u8g2 handle for calls not covered by the wrappers below.
  * Call display_mark_dirty() after drawing directly via this handle.
- * The mutex is NOT held while you use this handle — use with care in
- * multi-task contexts.
+ * The mutex is NOT held while you use this handle — use with care.
  */
 u8g2_t *display_get_u8g2(void);
 
@@ -146,9 +139,6 @@ void display_draw_vline(int x, int y, int len);
 
 /**
  * Render a QR code from a qrcodegen buffer.
- * Logs a warning if the image would be clipped by the 128×64 boundary.
- * Uses DrawPixel at scale=1 (faster) and DrawBox at scale≥2.
- *
  * @param x, y   Top-left corner including quiet zone.
  * @param scale  Pixels per module (2 → 42 px for v1 QR, fits left panel).
  * @param qrcode Buffer produced by qrcodegen_encodeText() / qr_gen_*.

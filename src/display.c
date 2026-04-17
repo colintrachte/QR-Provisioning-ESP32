@@ -1,22 +1,23 @@
 /**
  * display.c — u8g2-backed SSD1306 driver for Heltec WiFi LoRa 32 V3.
  *
- * Changes from original
- * ─────────────────────
- *  - All draw functions are guarded by s_initialized; calling any draw
- *    function before display_init() is now a safe no-op with a log warning
- *    rather than a crash.
- *  - A FreeRTOS mutex (s_mutex) protects the u8g2 buffer and dirty flag
- *    against concurrent access from multiple tasks.
- *  - display_set_color() exposes draw colour so callers can draw in
- *    "inverted" (black-on-white) mode without fighting the wrappers.
- *  - display_draw_qr() now validates that the rendered image fits within
- *    the 128×64 panel and logs a warning if it would be clipped.
- *  - display_draw_qr() uses DrawPixel at scale=1 instead of DrawBox for
- *    speed.
- *  - I2C clock is set to 400 kHz for faster display_flush().
- *  - display_init() returns false gracefully if the OLED hardware is absent
- *    (e.g. disconnected ribbon cable) so the rest of the firmware continues.
+ * I2C driver migration (ESP-IDF 5.x)
+ * ────────────────────────────────────
+ * The HAL (u8g2_esp32_hal.c) now uses driver/i2c_master.h exclusively.
+ * As a result:
+ *
+ *  - display_init() no longer installs a legacy i2c driver.  The HAL's
+ *    U8X8_MSG_BYTE_INIT handler calls i2c_new_master_bus() + add_device()
+ *    internally on the first u8g2_InitDisplay() call.
+ *
+ *  - display_reinit_i2c() now returns esp_err_t (was void).  It calls
+ *    u8g2_esp32_hal_reinit_bus() to tear down and recreate the bus/device
+ *    handles, then re-sends the SSD1306 init sequence.  i_sensors_init()
+ *    calls this after creating its own bus so the display HAL is consistent
+ *    with the freshly installed peripheral state.
+ *
+ * Everything else (mutex, dirty flag, draw wrappers, DISPLAY_GUARD) is
+ * unchanged from the previous version.
  */
 
 #include "display.h"
@@ -32,34 +33,25 @@
 
 static const char *TAG = "display";
 
-static u8g2_t          s_u8g2;
-static bool            s_dirty       = false;
-static bool            s_initialized = false;
-static bool            s_available   = false; /* false if OLED not detected */
-static SemaphoreHandle_t s_mutex     = NULL;
+static u8g2_t            s_u8g2;
+static bool              s_dirty       = false;
+static bool              s_initialized = false;
+static bool              s_available   = false;
+static SemaphoreHandle_t s_mutex       = NULL;
+static uint8_t           s_draw_color  = 1;
 
-/* Current draw colour (1 = white/on, 0 = black/off).  Settable via
- * display_set_color() so callers can draw inverted text or shapes without
- * the wrappers silently overriding them. */
-static uint8_t s_draw_color = 1;
+/* ── Guard macros ───────────────────────────────────────────────────────────*/
 
-/* ── Guard macro ────────────────────────────────────────────────────────────
- * Every public draw function calls DISPLAY_GUARD_RET() at entry.
- * If the display was never initialised or is unavailable, the call is a
- * safe no-op (returns the value passed as 'ret').
- */
 #define DISPLAY_GUARD_RET(ret)                                          \
     do {                                                                \
         if (!s_initialized || !s_available) {                           \
-            if (DEBUG_DISPLAY) {                                        \
+            if (DEBUG_DISPLAY)                                          \
                 ESP_LOGD(TAG, "%s: display not ready, skipping",        \
                          __func__);                                     \
-            }                                                           \
-            return ret;                                               \
+            return ret;                                                 \
         }                                                               \
     } while (0)
 
-/* Void variant for functions that return nothing. */
 #define DISPLAY_GUARD() DISPLAY_GUARD_RET( )
 
 /* ── Internal helpers ───────────────────────────────────────────────────────*/
@@ -81,7 +73,7 @@ static void gpio_output_set(int pin, int level)
 
 bool display_init(void)
 {
-    if (s_initialized) return s_available; /* idempotent */
+    if (s_initialized) return s_available;
 
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) {
@@ -93,32 +85,28 @@ bool display_init(void)
 
     ESP_LOGI(TAG, "Powering OLED via Vext (GPIO%d)", DISP_PIN_VEXT);
 
-    /* 1. Enable the OLED power rail.
-     * Heltec V3: GPIO36 HIGH = Vext ON.  (V3.1 variant is inverted — LOW = ON.) */
+    /* 1. Power rail. Heltec V3: GPIO36 HIGH = Vext ON. */
     gpio_output_set(DISP_PIN_VEXT, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    /* 2. Hardware-reset the SSD1306. */
+    /* 2. Hardware reset. */
     gpio_output_set(DISP_PIN_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_output_set(DISP_PIN_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* 3. Configure the ESP32 HAL (400 kHz I2C for faster flushes).
-     * WARNING: esp_wifi_start() resets the I2C peripheral as a side-effect
-     * of radio bring-up.  display_init() must be called BEFORE wifi_manager_start()
-     * OR the HAL must be re-initialised after WiFi starts.  In this firmware,
-     * display_init() runs first (step 1 of app_main), so the sequence is safe.
-     * If you reorder boot steps, the OLED will go dark and I2C will error. */
+    /* 3. Configure the HAL (stores parameters; does NOT install driver yet).
+     *    The driver is created inside U8X8_MSG_BYTE_INIT on the first
+     *    u8g2_InitDisplay() call below. */
     u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
-    hal.sda              = DISP_PIN_SDA;
-    hal.scl              = DISP_PIN_SCL;
-    hal.reset            = -1;   /* RST already toggled above */
-    hal.i2c_num          = I2C_NUM_0;
-    hal.i2c_clk_speed    = 400000; /* 400 kHz — SSD1306 supports up to ~1 MHz */
+    hal.sda           = DISP_PIN_SDA;
+    hal.scl           = DISP_PIN_SCL;
+    hal.reset         = -1;         /* RST toggled above; HAL need not touch it */
+    hal.i2c_port      = I2C_NUM_0;
+    hal.i2c_clk_speed = 400000;
     u8g2_esp32_hal_init(hal);
 
-    /* 4. Initialise u8g2 in full-frame-buffer mode. */
+    /* 4. Init u8g2 in full-frame-buffer mode. */
     u8g2_Setup_ssd1306_i2c_128x64_noname_f(
         &s_u8g2,
         U8G2_R0,
@@ -127,67 +115,60 @@ bool display_init(void)
 
     u8x8_SetI2CAddress(&s_u8g2.u8x8, DISP_I2C_ADDR);
 
-    /* 5. Send init sequence.  u8g2_InitDisplay() communicates with the
-     * hardware over I2C — if the OLED is disconnected this will fail.
-     * We treat the absence of the display as a non-fatal condition: the
-     * rest of the firmware continues, draw calls become no-ops. */
+    /* 5. Send init sequence — this triggers U8X8_MSG_BYTE_INIT in the HAL,
+     *    which creates the i2c_master bus + device handles.
+     *    If the OLED is absent the HAL will log an error; we set s_available
+     *    optimistically here and let i_sensors' bus scan correct it. */
     u8g2_InitDisplay(&s_u8g2);
+    u8g2_SetPowerSave(&s_u8g2, 0);
 
-    /* 6. Quick sanity check: try to send one byte and see if the I2C ACKs.
-     * u8g2 does not expose a clean "is hardware present?" query, so we
-     * infer it from SetPowerSave returning normally.  If the bus hangs
-     * the HAL will timeout and log an error; we check s_available below. */
-    u8g2_SetPowerSave(&s_u8g2, 0); /* 0 = display on */
+    s_available = true;   /* corrected by display_set_available() after scan */
 
-    /* If the HAL logged I2C errors the display is probably missing, but we
-     * have no cross-platform way to query that here.  The health_monitor
-     * component does an explicit I2C probe at DISP_I2C_ADDR to set the
-     * definitive s_available flag via display_set_available(). */
-    s_available = true; /* optimistic default; health_monitor may correct this */
-
-    /* Use the top of the glyph bounding box as the y origin for DrawStr.
-     * Without this, y is the text baseline, which varies per font and makes
-     * pixel-exact layout impossible across mixed font sizes. */
     u8g2_SetFontPosTop(&s_u8g2);
     u8g2_ClearBuffer(&s_u8g2);
     u8g2_SendBuffer(&s_u8g2);
 
-    s_dirty      = false;
+    s_dirty       = false;
     s_initialized = true;
     ESP_LOGI(TAG, "SSD1306 ready (400 kHz I2C)");
     return true;
 }
 
-/* Called by health_monitor after its I2C probe to set the definitive flag. */
 void display_set_available(bool available)
 {
     s_available = available;
-    if (!available) {
+    if (!available)
         ESP_LOGW(TAG, "OLED not detected — display calls will be no-ops");
-    }
 }
 
-void display_reinit_i2c(void)
+/**
+ * Re-synchronise the u8g2 HAL after WiFi resets the I2C peripheral.
+ *
+ * Called by i_sensors_init() after it has created a fresh i2c_master bus.
+ * Delegates the handle teardown/rebuild to u8g2_esp32_hal_reinit_bus(),
+ * then re-sends the SSD1306 init sequence so the controller is in a known
+ * state (GDDRAM contents are preserved — the panel stayed powered).
+ *
+ * Returns ESP_OK on success, or the error from u8g2_esp32_hal_reinit_bus().
+ */
+esp_err_t display_reinit_i2c(void)
 {
-    if (!s_initialized) return;
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    /* Re-run only the HAL init. The display panel retains its GDDRAM contents
-     * and power state — only the ESP32 peripheral side was reset by WiFi. */
-    u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
-    hal.sda           = DISP_PIN_SDA;
-    hal.scl           = DISP_PIN_SCL;
-    hal.reset         = -1;
-    hal.i2c_num       = I2C_NUM_0;
-    hal.i2c_clk_speed = 400000;
-    u8g2_esp32_hal_init(hal);
+    esp_err_t err = u8g2_esp32_hal_reinit_bus();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "display_reinit_i2c: HAL reinit failed: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
 
-    /* Re-send the init sequence so the controller is in a known state.
-     * u8g2_InitDisplay() does not clear GDDRAM — the previous image stays. */
+    /* Re-run controller init (does not clear GDDRAM). */
     u8g2_InitDisplay(&s_u8g2);
     u8g2_SetPowerSave(&s_u8g2, 0);
     u8g2_SetFontPosTop(&s_u8g2);
 
-    ESP_LOGI("display", "I2C HAL re-initialised after WiFi startup");
+    ESP_LOGI(TAG, "I2C HAL re-initialised after WiFi startup");
+    return ESP_OK;
 }
 
 bool display_is_available(void) { return s_available; }
@@ -213,11 +194,7 @@ void display_set_color(uint8_t color)
     s_draw_color = color ? 1 : 0;
 }
 
-/* ── Escape hatch ───────────────────────────────────────────────────────────*/
-
 u8g2_t *display_get_u8g2(void) { return &s_u8g2; }
-
-/* ── Dirty flag ─────────────────────────────────────────────────────────────*/
 
 void display_mark_dirty(void)  { s_dirty = true;  }
 void display_clear_dirty(void) { s_dirty = false; }
@@ -315,7 +292,6 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
     int quiet = (scale >= 3) ? 0 : (scale * 2);
     int total = size * scale + quiet * 2;
 
-    /* Bounds check: warn if the QR image would be clipped by the panel. */
     if (x + total > DISP_WIDTH || y + total > DISP_HEIGHT) {
         ESP_LOGW(TAG, "display_draw_qr: QR (%dx%d px) at (%d,%d) exceeds "
                  "panel (%dx%d) — image will be clipped",
@@ -324,10 +300,8 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
 
-    /* Fill quiet zone with black (background). */
     u8g2_SetDrawColor(&s_u8g2, 0);
     u8g2_DrawBox(&s_u8g2, x, y, total, total);
-
     u8g2_SetDrawColor(&s_u8g2, 1);
 
     for (int qy = 0; qy < size; qy++) {
@@ -335,18 +309,15 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
             if (qrcodegen_getModule(qrcode, qx, qy)) {
                 int px = x + quiet + qx * scale;
                 int py = y + quiet + qy * scale;
-
-                if (scale == 1) {
-                    /* DrawPixel is significantly faster than DrawBox at 1:1. */
+                if (scale == 1)
                     u8g2_DrawPixel(&s_u8g2, px, py);
-                } else {
+                else
                     u8g2_DrawBox(&s_u8g2, px, py, scale, scale);
-                }
             }
         }
     }
 
-    u8g2_SetDrawColor(&s_u8g2, s_draw_color); /* restore caller's colour */
+    u8g2_SetDrawColor(&s_u8g2, s_draw_color);
     s_dirty = true;
 
     xSemaphoreGive(s_mutex);
@@ -357,7 +328,6 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
 void display_flush(void)
 {
     DISPLAY_GUARD();
-
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     u8g2_SendBuffer(&s_u8g2);
     s_dirty = false;
