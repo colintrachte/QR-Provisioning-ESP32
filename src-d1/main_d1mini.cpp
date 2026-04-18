@@ -46,6 +46,16 @@
  *   mDNS via ESP8266mDNS (requires MDNS.update() in loop).
  *   Telemetry: sends left/right track state + rssi. No battery/temp on bare
  *   D1 Mini — add an ADC voltage divider and the i_battery equivalent if needed.
+ *
+ * OTA update
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   POST /ota/firmware   — upload a new .bin (Arduino sketch binary)
+ *   POST /ota/filesystem — upload a new LittleFS image
+ *   Both endpoints accept the binary as the raw POST body.
+ *   Auth: include X-OTA-Token header matching OTA_AUTH_TOKEN (empty = open).
+ *   No rollback on ESP8266 — the Update library writes and reboots directly.
+ *   If the new firmware fails to boot, hold D3 for 3 s to reprovision, or
+ *   reflash over USB.
  */
 
 #include <Arduino.h>
@@ -55,6 +65,7 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <Ticker.h>
+#include <Updater.h>
 
 /* Sign convention for this board's motor wiring. See header for explanation. */
 #define DRIVE_LEFT_SIGN  -1
@@ -588,10 +599,111 @@ static void startNormalMode(const String &ssid, const String &pass)
     s_ws.onEvent(onWsEvent);
     s_http.addHandler(&s_ws);
     s_http.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+    /* ── OTA firmware update endpoint ────────────────────────────────────
+     * Accepts a raw .bin POST body. Streams directly into the flash write
+     * buffer via the ESP8266 Update library — no RAM buffer needed.
+     * If OTA_AUTH_TOKEN is defined and non-empty, the X-OTA-Token header
+     * must match before any flash operation begins. */
+    s_http.on("/ota/firmware", HTTP_POST,
+        /* onRequest — sent after body is received; reboot here */
+        [](AsyncWebServerRequest *req) {
+            bool ok = !Update.hasError();
+            AsyncWebServerResponse *resp = req->beginResponse(
+                ok ? 200 : 500, "text/plain",
+                ok ? "OK — rebooting" : "Update failed");
+            resp->addHeader("Connection", "close");
+            req->send(resp);
+            if (ok) {
+                vTaskDelay(500);   /* give response time to reach browser */
+                ESP.restart();
+            }
+        },
+        /* onBody — called for each chunk of the POST body */
+        [](AsyncWebServerRequest *req, uint8_t *data,
+           size_t len, size_t index, size_t total) {
+
+#ifdef OTA_AUTH_TOKEN
+            if (sizeof(OTA_AUTH_TOKEN) > 1) {
+                String tok = req->header("X-OTA-Token");
+                if (tok != OTA_AUTH_TOKEN) {
+                    req->send(401, "text/plain", "Bad or missing X-OTA-Token");
+                    return;
+                }
+            }
+#endif
+            if (index == 0) {
+                Serial.printf("Firmware OTA start, size=%u
+", (unsigned)total);
+                /* U_FLASH = sketch partition. Free space must exceed total. */
+                if (!Update.begin(total, U_FLASH)) {
+                    Update.printError(Serial);
+                }
+            }
+            if (!Update.hasError()) {
+                if (Update.write(data, len) != len) {
+                    Update.printError(Serial);
+                }
+            }
+            if (index + len == total) {
+                if (!Update.end(true)) {
+                    Update.printError(Serial);
+                }
+                Serial.printf("Firmware OTA complete (%u bytes)
+", (unsigned)total);
+            }
+        });
+
+    /* ── OTA filesystem update endpoint ──────────────────────────────────
+     * Accepts a raw LittleFS image .bin as the POST body.
+     * Writes to the filesystem partition (U_FS). No reboot needed —
+     * LittleFS remounts automatically after the write completes. */
+    s_http.on("/ota/filesystem", HTTP_POST,
+        [](AsyncWebServerRequest *req) {
+            bool ok = !Update.hasError();
+            req->send(ok ? 200 : 500, "text/plain",
+                      ok ? "OK — filesystem updated" : "Filesystem update failed");
+        },
+        [](AsyncWebServerRequest *req, uint8_t *data,
+           size_t len, size_t index, size_t total) {
+
+#ifdef OTA_AUTH_TOKEN
+            if (sizeof(OTA_AUTH_TOKEN) > 1) {
+                String tok = req->header("X-OTA-Token");
+                if (tok != OTA_AUTH_TOKEN) {
+                    req->send(401, "text/plain", "Bad or missing X-OTA-Token");
+                    return;
+                }
+            }
+#endif
+            if (index == 0) {
+                Serial.printf("Filesystem OTA start, size=%u
+", (unsigned)total);
+                LittleFS.end();   /* unmount before writing */
+                if (!Update.begin(total, U_FS)) {
+                    Update.printError(Serial);
+                }
+            }
+            if (!Update.hasError()) {
+                if (Update.write(data, len) != len) {
+                    Update.printError(Serial);
+                }
+            }
+            if (index + len == total) {
+                if (!Update.end(true)) {
+                    Update.printError(Serial);
+                } else {
+                    LittleFS.begin();   /* remount */
+                    Serial.printf("Filesystem OTA complete (%u bytes)
+", (unsigned)total);
+                }
+            }
+        });
+
     s_http.begin();
 
     s_last_command = millis();
-    Serial.println("HTTP + WebSocket ready");
+    Serial.println("HTTP + WebSocket + OTA ready");
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════

@@ -29,6 +29,8 @@ CONFIG_LITTLEFS_USE_MTIME=n
 
 # ── Networking (HTTP + mDNS) ───────────────────────────────────────────────────
 CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_OTA_ALLOW_HTTP=y
 
 # Required for mDNS to function correctly
 CONFIG_LWIP_MULTICAST=y

@@ -26,6 +26,7 @@
 #include "o_led.h"
 #include "health_monitor.h"
 #include "prov_ui.h"
+#include "ota_server.h"
 #include "config.h"
 
 #include <string.h>
@@ -238,7 +239,7 @@ esp_err_t app_server_start(void)
     fs_mount();
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 10;
+    cfg.max_uri_handlers = 12;   /* 6 app routes + 2 OTA endpoints + headroom */
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;  /* required for wildcard */
 
@@ -259,6 +260,16 @@ esp_err_t app_server_start(void)
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
+
+    /* OTA update endpoints: POST /ota/firmware and POST /ota/filesystem.
+     * Registered after app routes so the wildcard 404 handler doesn't
+     * shadow them — OTA routes are POST, the wildcard only matches GET. */
+    ota_server_register(s_httpd);
+
+    /* Mark running firmware as valid — cancels any pending rollback.
+     * Reaching this point means WiFi connected and the HTTP server started
+     * successfully, which is a reasonable "healthy" signal. */
+    ota_server_mark_valid();
 
     ESP_LOGI(TAG, "App server started (port 80)");
     return ESP_OK;

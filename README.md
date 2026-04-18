@@ -29,6 +29,7 @@ Inspired by Meshtastic — but built for robotics, not messaging. Goal: a self-c
 No cloud required. No subscriptions. Optional cloud integrations are fine as add-ons.
 
 **Target use cases** (all sharing the same core):
+
 - Realtime RC control (tank, rover, arm)
 - Device-to-device control (direct or through a gateway)
 - Sequenced command playback (pre-arranged move lists)
@@ -41,11 +42,11 @@ No cloud required. No subscriptions. Optional cloud integrations are fine as add
 ## Hardware
 
 | Board   | Heltec WiFi LoRa 32 V3 (HTIT-WB32LA) |
-| ------- | ------------------------------------- |
+| ------- | ------------------------------------ |
 | MCU     | ESP32-S3FN8 @ 240 MHz dual-core LX7  |
 | Display | 0.96″ SSD1306 OLED 128×64 I2C        |
-| Flash   | 8 MB                                  |
-| PSRAM   | None (V3) / 2 MB (V4)                 |
+| Flash   | 8 MB                                 |
+| PSRAM   | None (V3) / 2 MB (V4)                |
 
 ### Pin assignments
 
@@ -125,6 +126,111 @@ pio run -t uploadfs
 
 Hold the **USER button (GPIO0)** for 3 seconds at boot → credentials erased → portal starts.
 
+### First-time setup: sdkconfig.defaults (ESP-IDF targets only)
+
+The following keys must be present in `sdkconfig.defaults` before your first build. PlatformIO processes this file when it generates the IDF configuration — do not set these in `platformio.ini` `build_flags`.
+
+```
+# WebSocket support (required for the control page)
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# OTA rollback — new firmware boots in "pending verify" state;
+# rolls back automatically if the app crashes before marking itself valid.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Allow OTA over plain HTTP (required unless you add TLS certificate handling)
+CONFIG_OTA_ALLOW_HTTP=y
+```
+
+These settings have no equivalent on the D1 Mini (Arduino framework) — the ESP8266 `Updater` library handles OTA without menuconfig.
+
+---
+
+## OTA updates
+
+Both firmware and web UI (LittleFS filesystem) can be updated over WiFi while the device is running. No USB cable, no serial programmer.
+
+### Endpoints (all targets)
+
+| Endpoint          | Method | Body                | Effect                              |
+| ----------------- | ------ | ------------------- | ----------------------------------- |
+| `/ota/firmware`   | POST   | raw `.bin`          | Flash new firmware, reboot          |
+| `/ota/filesystem` | POST   | raw LittleFS `.bin` | Reflash web UI, remount — no reboot |
+
+### Authentication
+
+Set `OTA_AUTH_TOKEN` in `platformio.ini` `build_flags` to require a token header on every OTA request. Leave it commented out for open access on a trusted LAN.
+
+```ini
+; Inside [env:robot_esp32], [env:ttgo_lora32_v1], or [env:d1_mini]:
+-DOTA_AUTH_TOKEN="your-secret-token"
+```
+
+Include the header in every OTA request:
+
+```
+X-OTA-Token: your-secret-token
+```
+
+### Rollback (ESP-IDF targets only)
+
+After flashing, the bootloader boots the new image in a _pending verify_ state. `app_server_start()` calls `ota_server_mark_valid()` once the HTTP server is up — that call cancels the rollback. If the new firmware panics or fails to reach that point before the watchdog fires, the next power cycle automatically restores the previous image.
+
+The D1 Mini has no rollback. If bad firmware is flashed over OTA, hold the reset button to re-enter provisioning and reflash over USB.
+
+### How to flash OTA
+
+Build first, then POST the binary with `curl`. The `.bin` paths are always under `.pio/build/<env>/`.
+
+```bash
+# 1. Build
+pio run -e robot_esp32          # or ttgo_lora32_v1 / d1_mini
+
+# 2. Flash firmware (replace IP with your device's address)
+curl -X POST http://192.168.1.42/ota/firmware      -H "Content-Type: application/octet-stream"      --data-binary @.pio/build/robot_esp32/firmware.bin
+
+# 3. Flash web UI separately (no reboot needed)
+curl -X POST http://192.168.1.42/ota/filesystem      -H "Content-Type: application/octet-stream"      --data-binary @.pio/build/robot_esp32/littlefs.bin
+```
+
+With auth token:
+
+```bash
+curl -X POST http://192.168.1.42/ota/firmware      -H "X-OTA-Token: your-secret-token"      -H "Content-Type: application/octet-stream"      --data-binary @.pio/build/robot_esp32/firmware.bin
+```
+
+The D1 Mini advertises as `rc-tank.local` via mDNS — you can use the hostname instead of the IP after first provisioning:
+
+```bash
+curl -X POST http://rc-tank.local/ota/firmware      --data-binary @.pio/build/d1_mini/firmware.bin
+```
+
+### Partition layout
+
+Each ESP32 target uses a dedicated partition table sized to fill its flash exactly and provide two equal firmware slots for rollback.
+
+**Heltec V3 — `partitions_8mb.csv` (8 MB flash):**
+
+| Partition | Size    | Purpose                           |
+| --------- | ------- | --------------------------------- |
+| nvs       | 20 kB   | NVS credential + settings storage |
+| otadata   | 8 kB    | Active OTA slot selector          |
+| ota_0     | 3.19 MB | Firmware slot A                   |
+| ota_1     | 3.19 MB | Firmware slot B                   |
+| storage   | 1.56 MB | LittleFS web UI                   |
+
+**TTGO V1 — `partitions_4mb.csv` (4 MB flash):**
+
+| Partition | Size    | Purpose                           |
+| --------- | ------- | --------------------------------- |
+| nvs       | 20 kB   | NVS credential + settings storage |
+| otadata   | 8 kB    | Active OTA slot selector          |
+| ota_0     | 1.75 MB | Firmware slot A                   |
+| ota_1     | 1.75 MB | Firmware slot B                   |
+| storage   | 448 kB  | LittleFS web UI                   |
+
+The D1 Mini uses the ESP8266 Arduino core's built-in OTA partition scheme. The `Updater` library splits the 4 MB flash in half automatically — no custom partition table is needed or supported.
+
 ---
 
 ## Robot control page
@@ -133,12 +239,12 @@ Served by `app_server` on port 80 after STA connects. The setup page includes a 
 
 ### Controls
 
-| Input | How |
-| ----- | --- |
-| Touch joystick | Drag the puck — works in any browser |
-| WASD keyboard | Hold keys; axes ramp 0→1 over 180 ms |
-| Arm / Disarm button | Must be armed before any movement command is sent |
-| PC ↔ Touch toggle | Switches joystick visibility; keyboard always active |
+| Input               | How                                                  |
+| ------------------- | ---------------------------------------------------- |
+| Touch joystick      | Drag the puck — works in any browser                 |
+| WASD keyboard       | Hold keys; axes ramp 0→1 over 180 ms                 |
+| Arm / Disarm button | Must be armed before any movement command is sent    |
+| PC ↔ Touch toggle   | Switches joystick visibility; keyboard always active |
 
 Input mode switches automatically on first touch or mouse event rather than relying on a media query, which is unreliable on hybrid devices.
 
@@ -146,23 +252,23 @@ Both joystick and keyboard pass through the same processing pipeline: deadzone r
 
 ### Commands sent to firmware (WebSocket text)
 
-| Message | Meaning |
-| ------- | ------- |
-| `x:F,y:F` | Drive axes −1.0 to +1.0, sent at 20 Hz |
-| `stop` | Halt — sent when disarmed or both axes are zero |
-| `led:F` | LED brightness 0.00–1.00, sent on change only |
-| `ping` | Latency probe; firmware replies `pong` |
+| Message   | Meaning                                         |
+| --------- | ----------------------------------------------- |
+| `x:F,y:F` | Drive axes −1.0 to +1.0, sent at 20 Hz          |
+| `stop`    | Halt — sent when disarmed or both axes are zero |
+| `led:F`   | LED brightness 0.00–1.00, sent on change only   |
+| `ping`    | Latency probe; firmware replies `pong`          |
 
 ### Telemetry received from firmware (WebSocket JSON)
 
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `rssi` | int | WiFi signal dBm |
-| `battery` | int | Battery % |
-| `temp` | float \| null | Temperature °C; null if no sensor |
-| `uptime` | int | Seconds since boot |
-| `heap` | int | Free heap bytes |
-| `errors` | int | Cumulative error count |
+| Field     | Type          | Description                       |
+| --------- | ------------- | --------------------------------- |
+| `rssi`    | int           | WiFi signal dBm                   |
+| `battery` | int           | Battery %                         |
+| `temp`    | float \| null | Temperature °C; null if no sensor |
+| `uptime`  | int           | Seconds since boot                |
+| `heap`    | int           | Free heap bytes                   |
+| `errors`  | int           | Cumulative error count            |
 
 Track card speed bars are driven locally from the commanded axes (arcade mix mirrored from `ctrl_drive.c`) rather than from firmware telemetry, giving immediate visual feedback. Heap, uptime, and errors are shown in a collapsible diagnostics drawer rather than the primary UI.
 
@@ -246,10 +352,10 @@ app_server_start()      HTTP file server + WebSocket on port 80.
 
 Set `MOTOR_DRIVER_MODE` in `config.h`:
 
-| Mode | Description |
-| ---- | ----------- |
+| Mode                    | Description                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------- |
 | `MOTOR_MODE_DIR_PWM_EN` | DIR pin sets direction, PWM sets speed, EN enables. One LEDC channel per motor. |
-| `MOTOR_MODE_BTN8982` | BTN8982 H-bridge: IN1/IN2 PWM per half-bridge. Four LEDC channels total. |
+| `MOTOR_MODE_BTN8982`    | BTN8982 H-bridge: IN1/IN2 PWM per half-bridge. Four LEDC channels total.        |
 
 ### Design decisions
 
@@ -271,25 +377,28 @@ Set `MOTOR_DRIVER_MODE` in `config.h`:
 
 ## File map
 
-| File | Purpose |
-| ---- | ------- |
-| `main/config.h` | All compile-time constants — pins, timing, motor mode, debug flags |
-| `main/main.c` | Boot sequence, main loop, boot-loop guard, safe mode |
-| `main/wifi_manager.c/.h` | STA/AP state machine, NVS credential storage |
-| `main/portal.c/.h` | SoftAP captive portal, DNS hijack, scan endpoint |
-| `main/app_server.c/.h` | HTTP file server, WebSocket dispatch, telemetry push |
-| `main/prov_ui.c/.h` | OLED state machine driven by wifi_manager callbacks |
-| `main/display.c/.h` | u8g2 wrapper — mutex-guarded draw calls, dirty-flag flush |
-| `main/qr_gen.c/.h` | QR encode helpers |
-| `main/health_monitor.c/.h` | Periodic RSSI check, telemetry JSON builder |
-| `main/i_battery.c/.h` | ADC battery voltage + percent |
-| `main/i_sensors.c/.h` | I2C bus owner, post-WiFi reinit, peripheral scan |
-| `main/o_led.c/.h` | Onboard LED LEDC driver, blink patterns |
-| `main/o_motors.c/.h` | Brushed DC motor output, two topology modes |
-| `main/ctrl_drive.c/.h` | Differential drive mixing, arming, command watchdog |
-| `data/index.html` | Robot control page |
-| `data/style.css` | Robot control styles |
-| `data/script.js` | Robot control logic (joystick, keyboard, WebSocket, telemetry) |
+| File                       | Purpose                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `main/config.h`            | All compile-time constants — pins, timing, motor mode, debug flags |
+| `main/main.c`              | Boot sequence, main loop, boot-loop guard, safe mode               |
+| `main/wifi_manager.c/.h`   | STA/AP state machine, NVS credential storage                       |
+| `main/portal.c/.h`         | SoftAP captive portal, DNS hijack, scan endpoint                   |
+| `main/app_server.c/.h`     | HTTP file server, WebSocket dispatch, telemetry push               |
+| `main/prov_ui.c/.h`        | OLED state machine driven by wifi_manager callbacks                |
+| `main/display.c/.h`        | u8g2 wrapper — mutex-guarded draw calls, dirty-flag flush          |
+| `main/qr_gen.c/.h`         | QR encode helpers                                                  |
+| `main/health_monitor.c/.h` | Periodic RSSI check, telemetry JSON builder                        |
+| `main/i_battery.c/.h`      | ADC battery voltage + percent                                      |
+| `main/i_sensors.c/.h`      | I2C bus owner, post-WiFi reinit, peripheral scan                   |
+| `main/o_led.c/.h`          | Onboard LED LEDC driver, blink patterns                            |
+| `main/o_motors.c/.h`       | Brushed DC motor output, two topology modes                        |
+| `main/ctrl_drive.c/.h`     | Differential drive mixing, arming, command watchdog                |
+| `main/ota_server.c/.h`     | OTA firmware + filesystem update endpoints (ESP-IDF targets)       |
+| `partitions_8mb.csv`       | Flash layout for Heltec V3 (8 MB — two OTA slots + LittleFS)       |
+| `partitions_4mb.csv`       | Flash layout for TTGO V1 (4 MB — two OTA slots + LittleFS)         |
+| `data/index.html`          | Robot control page                                                 |
+| `data/style.css`           | Robot control styles                                               |
+| `data/script.js`           | Robot control logic (joystick, keyboard, WebSocket, telemetry)     |
 
 ---
 
@@ -316,15 +425,20 @@ The WebSocket dispatch in `app_server.c` routes text commands to `ctrl_drive` an
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
-| ------- | ------------ |
-| Web files 404 | Run `pio run -t uploadfs` |
-| WebSocket not connecting | `CONFIG_HTTPD_WS_SUPPORT` not set in `sdkconfig.defaults` |
-| OLED blank | Check Vext GPIO (36), I2C address, ribbon cable |
-| QR not scannable | SSID or password too long; reduce length or lower ECC |
-| Motors don't move | Check `MOTOR_DRIVER_MODE` in `config.h`; confirm `ARMED` state in UI |
-| Boot loops | Hold USER button (GPIO0) 3 s to erase credentials |
-| I2C errors after WiFi | `i_sensors_init()` must run after `wifi_manager_start()` — see boot sequence |
+| Symptom                                  | Likely cause                                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------- |
+| Web files 404                            | Run `pio run -t uploadfs`                                                     |
+| WebSocket not connecting                 | `CONFIG_HTTPD_WS_SUPPORT` not set in `sdkconfig.defaults`                     |
+| OLED blank                               | Check Vext GPIO (36), I2C address, ribbon cable                               |
+| QR not scannable                         | SSID or password too long; reduce length or lower ECC                         |
+| Motors don't move                        | Check `MOTOR_DRIVER_MODE` in `config.h`; confirm `ARMED` state in UI          |
+| Boot loops                               | Hold USER button (GPIO0) 3 s to erase credentials                             |
+| I2C errors after WiFi                    | `i_sensors_init()` must run after `wifi_manager_start()` — see boot sequence  |
+| OTA returns 500                          | Image too large for partition, or corrupted transfer — check partition sizes  |
+| OTA returns 401                          | `X-OTA-Token` header missing or wrong — check `OTA_AUTH_TOKEN` in build_flags |
+| No rollback after OTA                    | `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` missing from `sdkconfig.defaults`   |
+| Device doesn't reboot after firmware OTA | Normal — wait 2 s then reconnect                                              |
+| LittleFS corrupt after filesystem OTA    | Transfer interrupted — reflash `littlefs.bin` again                           |
 
 ---
 
@@ -332,7 +446,6 @@ The WebSocket dispatch in `app_server.c` routes text commands to `ctrl_drive` an
 
 ### Firmware / backend
 
-- [ ] **OTA firmware update** — `esp_https_ota`, preserve NVS. Also OTA for LittleFS partition (web file update without full reflash).
 - [ ] **Dynamic user settings** — JSON file in LittleFS for runtime config (calibration, UI template, LoRa region). Survives OTA. Simple GET/POST API from app_server.
 - [ ] **UI template switching** — store selected template name in user settings; app_server serves the matching HTML/CSS/JS. Current RC tank UI is template #1.
 - [ ] **Peripheral config system** — read hardware profile from user settings at boot (which sensors, which GPIOs). `i_sensors` already scans I2C; extend to act on findings.
@@ -354,7 +467,7 @@ The WebSocket dispatch in `app_server.c` routes text commands to `ctrl_drive` an
   - Heltec WiFi LoRa 32 V3 (current — ESP32-S3, SSD1306 I2C)
   - TTGO LoRa32 V1 (ESP32, SSD1306 I2C, AXP192 PMIC, NEO-6M GPS, onboard temp)
   - Heltec HTIT-Tracker (ESP32-S3, confirm I2C pinout)
-  Each board gets a header in `components/boards/<name>.h` selected by a build flag in `platformio.ini`.
+    Each board gets a header in `components/boards/<name>.h` selected by a build flag in `platformio.ini`.
 - [ ] **TTGO V1 peripherals** — AXP192 PMIC (battery voltage, charge state), NEO-6M GPS, onboard temp. Add address-to-peripheral mapping entries in `i_sensors`.
 - [ ] **SPI display support** — ST7735 / ILI9341 for boards without I2C OLED. u8g2 already supports these; needs HAL config.
 - [ ] **E-paper display** — useful for low-power / solar use cases.
@@ -369,6 +482,7 @@ The WebSocket dispatch in `app_server.c` routes text commands to `ctrl_drive` an
 ## License
 
 MIT. See individual component licenses:
+
 - nayuki/QR-Code-generator: MIT
 - ESP-IDF components: Apache 2.0
 - u8g2: 2-clause BSD
