@@ -1,11 +1,16 @@
 /**
  * prov_ui.c — OLED state machine for the WiFi provisioning flow.
  *
- * Layout (128×64 SSD1306): QR on left (≤64 px wide), text labels on right
- * (x=68+), status bar at y=54-63.  best_qr_scale() auto-fits QR to panel.
+ * Layout (128×64 SSD1306): QR on left (scale 2), text labels on right
+ * (x=62+), status bar at y=54-63.
+ *
+ * QR codes are always rendered at scale 2. Scale 1 is unreadable on most
+ * phone cameras; scale 3 overflows the panel for typical SSID/URL lengths.
  *
  * QR slots: QR_WIFI (join AP), QR_SETUP (portal URL), QR_INDEX (robot URL).
  * QR_INDEX is generated in prov_ui_on_connected() once the STA IP is known.
+ * On the connected screen the QR is centred above a full-width IP address
+ * row so the address never clips regardless of digit count.
  * When a WebSocket client is connected, the index screen shows just the IP
  * (no QR) since the user is clearly already there.
  */
@@ -52,46 +57,15 @@ static int     s_ws_clients     = 0;   /* set by prov_ui_set_client_count()  */
  */
 #define QR_X          0
 #define QR_Y          0
-#define QR_PANEL_W   60   /* max px wide for side-by-side screens           */
 #define TEXT_X       62   /* right column for AP/setup screens               */
 #define STATUS_CLR_Y 54
 #define STATUS_TEXT_Y 56
 
-/* Max pixel size the QR can occupy when displayed full-width (INDEX screen).
- * We reserve IP_ROW_H pixels at the bottom for the IP address. */
-#define IP_ROW_H     12   /* height of the IP address row in px              */
-#define QR_INDEX_MAX (DISP_HEIGHT - IP_ROW_H)   /* 52 px for 128×64 panel  */
+/* Scale 1 is unreadable on most phone cameras. Fixed at 2. */
+#define QR_SCALE      2
 
-/* ── Scale selection ────────────────────────────────────────────────────────
- * Returns the largest scale (3→2→1) where modules*scale + quiet*2 fits
- * within max_px in both dimensions.  Falls back to 1 with a warning. */
-static uint8_t best_qr_scale_max(const uint8_t *qrcode, int max_px)
-{
-    uint8_t modules = qrcodegen_getSize(qrcode);
-    for (uint8_t s = 3; s >= 1; s--)
-    {
-        uint8_t quiet    = (s >= 3) ? 0 : (s * 2);
-        uint8_t total_px = modules * s + quiet * 2;
-        if (total_px <= max_px)
-            return s;
-    }
-    ESP_LOGW(TAG, "best_qr_scale: QR (%d modules) too large — using scale 1", modules);
-    return 1;
-}
-
-/* Side-by-side screens: fit within QR_PANEL_W × DISP_HEIGHT */
-static uint8_t best_qr_scale(const uint8_t *qrcode)
-{
-    int lim = QR_PANEL_W < DISP_HEIGHT ? QR_PANEL_W : DISP_HEIGHT;
-    return best_qr_scale_max(qrcode, lim);
-}
-
-/* Index (connected) screen: fit within full width × QR_INDEX_MAX height */
-static uint8_t best_qr_scale_index(const uint8_t *qrcode)
-{
-    int lim = DISP_WIDTH < QR_INDEX_MAX ? DISP_WIDTH : QR_INDEX_MAX;
-    return best_qr_scale_max(qrcode, lim);
-}
+/* Height of the IP address row on the connected (index) screen. */
+#define IP_ROW_H     12
 
 /* ── Internal renderers ─────────────────────────────────────────────────────*/
 
@@ -129,10 +103,7 @@ static void render_qr_screen(qr_slot_t slot,
 
     if (ready)
     {
-        int scale = best_qr_scale(qr);
-        ESP_LOGD(TAG, "render_qr slot=%d scale=%d modules=%d",
-                 (int)slot, scale, qrcodegen_getSize(qr));
-        display_draw_qr(QR_X, QR_Y, scale, qr);
+        display_draw_qr(QR_X, QR_Y, QR_SCALE, qr);
     }
     else
     {
@@ -212,12 +183,9 @@ static void render_connected(void)
         /* QR in upper portion, IP address on its own row below — no side column. */
         if (s_qr_index_ok)
         {
-            int scale   = best_qr_scale_index(s_qr_index);
-            int qr_size = qrcodegen_getSize(s_qr_index) * scale;
-            int qr_x    = (DISP_WIDTH - qr_size) / 2;   /* centre horizontally */
-            ESP_LOGD(TAG, "render_connected: QR scale=%d modules=%d x=%d",
-                     scale, qrcodegen_getSize(s_qr_index), qr_x);
-            display_draw_qr(qr_x, QR_Y, scale, s_qr_index);
+            int qr_px = qrcodegen_getSize(s_qr_index) * QR_SCALE;
+            int qr_x  = (DISP_WIDTH - qr_px) / 2;   /* centre horizontally */
+            display_draw_qr(qr_x, QR_Y, QR_SCALE, s_qr_index);
         }
         else
         {
