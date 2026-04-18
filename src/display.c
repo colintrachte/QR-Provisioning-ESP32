@@ -83,11 +83,16 @@ bool display_init(void)
         return false;
     }
 
+    /* 1. Power rail — only where a GPIO switch exists (e.g. Heltec Vext).
+     *    TTGO and other boards with always-on PMIC rails set DISP_PIN_VEXT
+     *    to -1 in their board header to skip this step. */
+#if DISP_PIN_VEXT >= 0
     ESP_LOGI(TAG, "Powering OLED via Vext (GPIO%d)", DISP_PIN_VEXT);
-
-    /* 1. Power rail. Heltec V3: GPIO36 HIGH = Vext ON. */
     gpio_output_set(DISP_PIN_VEXT, 1);
     vTaskDelay(pdMS_TO_TICKS(50));
+#else
+    ESP_LOGI(TAG, "OLED power via PMIC (no Vext GPIO)");
+#endif
 
     /* 2. Hardware reset. */
     gpio_output_set(DISP_PIN_RST, 0);

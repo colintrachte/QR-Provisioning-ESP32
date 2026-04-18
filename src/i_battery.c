@@ -17,6 +17,15 @@
 
 static const char *TAG = "i_battery";
 
+/* On boards where battery voltage is read via AXP192 PMIC (e.g. TTGO V1),
+ * the ADC path returns meaningless values. i_battery_init() logs a warning
+ * and skips ADC setup; i_battery_read_mv() and i_battery_percent() return 0
+ * until an AXP192 I2C driver is wired in as a replacement. */
+#ifdef BOARD_BATTERY_VIA_AXP192
+#warning "BOARD_BATTERY_VIA_AXP192 defined — i_battery ADC path disabled. \
+Wire an AXP192 driver for real battery readings."
+#endif
+
 static adc_oneshot_unit_handle_t s_adc_handle  = NULL;
 static adc_cali_handle_t         s_cali_handle = NULL;
 static bool                      s_initialized = false;
@@ -42,6 +51,11 @@ static uint32_t rolling_average_mv(uint32_t new_mv)
 
 void i_battery_init(void)
 {
+#ifdef BOARD_BATTERY_VIA_AXP192
+    ESP_LOGW(TAG, "Battery via AXP192 — ADC init skipped. Readings will be 0 "
+             "until AXP192 I2C driver is wired in.");
+    return;
+#endif
     adc_oneshot_unit_init_cfg_t unit_cfg = {
         .unit_id  = BATTERY_ADC_UNIT,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
