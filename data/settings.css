@@ -1,42 +1,20 @@
-/* settings.css — Admin / settings page styles.
- * Uses the same design tokens as style.css but with a card layout
- * matching setup.css. Kept separate so each page evolves independently. */
+/* =============================================================================
+ * settings.css — Admin / settings page styles.
+ * Requires base.css to be loaded first.
+ * ============================================================================= */
 
-:root {
-  --clr-bg:       #0f1117;
-  --clr-surface:  #1c1f2b;
-  --clr-border:   #2e3347;
-  --clr-text:     #e4e6f0;
-  --clr-muted:    #4a4f6a;
-  --clr-accent:   #3b82f6;
-  --clr-success:  #22c55e;
-  --clr-danger:   #ef4444;
-  --clr-warning:  #f59e0b;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-}
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+/* ── Body layout ────────────────────────────────────────────────────────────*/
 body {
-  font-family: system-ui, sans-serif;
-  background:  var(--clr-bg);
-  color:       var(--clr-text);
-  min-height:  100dvh;
-  display:     flex;
+  display:         flex;
   justify-content: center;
-  padding:     24px 16px;
+  padding:         24px 16px;
 }
 
-/* ── Card ───────────────────────────────────────────────────────────────────*/
+/* ── Card (extends base .card — adds overflow + max-width + fit-height) ─────*/
 .card {
-  width:     100%;
   max-width: 420px;
-  background:    var(--clr-surface);
-  border:        1px solid var(--clr-border);
-  border-radius: var(--radius-md);
-  overflow:      hidden;  /* tabs flush to card edges */
-  height:        fit-content;
+  overflow:  hidden;      /* keeps tabs flush to card edges */
+  height:    fit-content;
 }
 
 /* ── Page header ────────────────────────────────────────────────────────────*/
@@ -58,32 +36,32 @@ body {
 
 /* ── Tabs ───────────────────────────────────────────────────────────────────*/
 .tabs {
-  display:          flex;
-  border-bottom:    1px solid var(--clr-border);
-  background:       var(--clr-bg);
+  display:       flex;
+  border-bottom: 1px solid var(--clr-border);
+  background:    var(--clr-bg);
 }
 .tab {
-  flex:             1;
-  padding:          10px 0;
-  background:       none;
-  border:           none;
-  border-bottom:    2px solid transparent;
-  color:            var(--clr-muted);
-  font-size:        0.82rem;
-  font-weight:      600;
-  font-family:      inherit;
-  cursor:           pointer;
-  letter-spacing:   0.04em;
-  text-transform:   uppercase;
-  transition:       color 0.15s, border-color 0.15s;
+  flex:           1;
+  padding:        10px 0;
+  background:     none;
+  border:         none;
+  border-bottom:  2px solid transparent;
+  color:          var(--clr-muted);
+  font-size:      0.82rem;
+  font-weight:    600;
+  font-family:    inherit;
+  cursor:         pointer;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition:     color 0.15s, border-color 0.15s;
 }
-.tab.active        { color: var(--clr-accent); border-bottom-color: var(--clr-accent); }
+.tab.active             { color: var(--clr-accent); border-bottom-color: var(--clr-accent); }
 .tab:hover:not(.active) { color: var(--clr-text); }
 
 /* ── Tab panels ─────────────────────────────────────────────────────────────*/
-.tab-panel         { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-.tab-panel.hidden  { display: none; }
-.tab-intro         { font-size: 0.82rem; color: var(--clr-muted); line-height: 1.6; }
+.tab-panel        { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.tab-panel.hidden { display: none; }
+.tab-intro        { font-size: 0.82rem; color: var(--clr-muted); line-height: 1.6; }
 
 /* ── WiFi status row ────────────────────────────────────────────────────────*/
 .status-row {
@@ -95,66 +73,34 @@ body {
   border:        1px solid var(--clr-border);
   border-radius: var(--radius-sm);
 }
-.status-dot {
-  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
-}
+.status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.connected    { background: var(--clr-success); box-shadow: 0 0 5px var(--clr-success); }
 .status-dot.disconnected { background: var(--clr-danger); }
 .status-primary   { font-size: 0.9rem; font-weight: 600; }
 .status-secondary { font-size: 0.75rem; color: var(--clr-muted); margin-top: 2px; }
 .signal-badge     { margin-left: auto; font-size: 0.8rem; color: var(--clr-muted); white-space: nowrap; }
 
-/* ── Section label ──────────────────────────────────────────────────────────*/
+/* ── Section label (extends base — adds flex layout for inline scan button) ─*/
 .section-label {
-  display:        flex;
-  align-items:    center;
-  gap:            8px;
-  font-size:      0.72rem;
-  font-weight:    600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color:          var(--clr-muted);
+  display:     flex;
+  align-items: center;
+  gap:         8px;
 }
 
 /* ── Network list ───────────────────────────────────────────────────────────*/
 #network-list {
-  display:       flex;
-  flex-direction:column;
-  gap:           6px;
-  max-height:    180px;
-  overflow-y:    auto;
+  display:        flex;
+  flex-direction: column;
+  gap:            6px;
+  max-height:     180px;
+  overflow-y:     auto;
 }
 .list-placeholder { font-size: 0.8rem; color: var(--clr-muted); text-align: center; padding: 10px 0; }
 
-.network-btn {
-  display:         flex;
-  align-items:     center;
-  justify-content: space-between;
-  padding:         9px 12px;
-  background:      var(--clr-bg);
-  border:          1px solid var(--clr-border);
-  border-radius:   var(--radius-sm);
-  color:           var(--clr-text);
-  font-size:       0.88rem;
-  font-family:     inherit;
-  cursor:          pointer;
-  text-align:      left;
-  width:           100%;
-  transition:      border-color 0.12s, background 0.12s;
-}
-.network-btn:hover,
-.network-btn.selected { border-color: var(--clr-accent); background: #13172a; }
-.network-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--clr-muted); font-size: 0.78rem; }
-
 /* ── Form fields ────────────────────────────────────────────────────────────*/
-.field-label {
-  font-size:      0.72rem;
-  font-weight:    600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color:          var(--clr-muted);
-  margin-bottom:  -8px;  /* gap handles spacing */
-}
+/* .field-label, .pass-wrap, .toggle-pass — from base.css */
+
+/* settings uses .text-input (not base's .input) so the full rule is needed here */
 .text-input {
   width:         100%;
   padding:       10px 12px;
@@ -169,26 +115,12 @@ body {
 }
 .text-input:focus { border-color: var(--clr-accent); }
 
-.pass-wrap { position: relative; }
 .pass-wrap .text-input { padding-right: 42px; }
-.toggle-pass {
-  position:    absolute;
-  right:       10px;
-  top:         50%;
-  transform:   translateY(-50%);
-  background:  none;
-  border:      none;
-  color:       var(--clr-muted);
-  cursor:      pointer;
-  font-size:   1rem;
-  padding:     4px;
-  line-height: 1;
-}
-.toggle-pass:hover { color: var(--clr-text); }
 
 .field-hint { font-size: 0.75rem; color: var(--clr-muted); margin-top: -6px; }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────*/
+/* settings uses .primary-btn / .ghost-btn / .danger-btn (not base's .btn-* names) */
 .primary-btn {
   width:         100%;
   padding:       11px;
@@ -202,7 +134,7 @@ body {
   cursor:        pointer;
   transition:    background 0.15s, opacity 0.15s;
 }
-.primary-btn:hover    { background: #2563eb; }
+.primary-btn:hover    { background: var(--clr-accent-hover); }
 .primary-btn:disabled { opacity: 0.45; cursor: default; }
 
 .ghost-btn {
@@ -220,12 +152,12 @@ body {
 
 /* ── Danger zone ────────────────────────────────────────────────────────────*/
 .danger-zone {
-  border:        1px solid rgba(239,68,68,0.25);
-  border-radius: var(--radius-sm);
-  padding:       14px;
-  display:       flex;
-  flex-direction:column;
-  gap:           10px;
+  border:         1px solid rgba(239,68,68,0.25);
+  border-radius:  var(--radius-sm);
+  padding:        14px;
+  display:        flex;
+  flex-direction: column;
+  gap:            10px;
 }
 .danger-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--clr-danger); }
 .danger-btn {
@@ -243,16 +175,16 @@ body {
 
 /* ── Drop zone ──────────────────────────────────────────────────────────────*/
 .drop-zone {
-  border:        2px dashed var(--clr-border);
-  border-radius: var(--radius-md);
-  padding:       28px 20px;
-  text-align:    center;
-  cursor:        pointer;
-  transition:    border-color 0.15s, background 0.15s;
-  display:       flex;
-  flex-direction:column;
-  align-items:   center;
-  gap:           6px;
+  border:         2px dashed var(--clr-border);
+  border-radius:  var(--radius-md);
+  padding:        28px 20px;
+  text-align:     center;
+  cursor:         pointer;
+  transition:     border-color 0.15s, background 0.15s;
+  display:        flex;
+  flex-direction: column;
+  align-items:    center;
+  gap:            6px;
 }
 .drop-zone.drag-over { border-color: var(--clr-accent); background: rgba(59,130,246,0.06); }
 .drop-icon  { font-size: 2rem; line-height: 1; }
@@ -307,19 +239,19 @@ body {
   border-radius: var(--radius-sm);
 }
 .progress-label {
-  position:      absolute;
-  inset:         0;
-  display:       flex;
-  align-items:   center;
+  position:        absolute;
+  inset:           0;
+  display:         flex;
+  align-items:     center;
   justify-content: center;
-  font-size:     0.78rem;
-  font-weight:   600;
-  color:         var(--clr-text);
-  mix-blend-mode: difference;   /* readable over both empty and filled bar */
+  font-size:       0.78rem;
+  font-weight:     600;
+  color:           var(--clr-text);
+  mix-blend-mode:  difference; /* readable over both empty and filled bar */
 }
 
 /* ── Status message ─────────────────────────────────────────────────────────*/
-.status-msg { font-size: 0.8rem; text-align: center; min-height: 1.2em; color: var(--clr-muted); }
+.status-msg         { font-size: 0.8rem; text-align: center; min-height: 1.2em; color: var(--clr-muted); }
 .status-msg.ok      { color: var(--clr-success); }
 .status-msg.error   { color: var(--clr-danger); }
 .status-msg.warning { color: var(--clr-warning); }

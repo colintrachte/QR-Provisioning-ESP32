@@ -1,44 +1,31 @@
-/* ── Design tokens ──────────────────────────────────────────────────────────*/
+/* =============================================================================
+ * index.css — Main robot control page styles.
+ * Requires base.css to be loaded first.
+ * ============================================================================= */
+
+/* ── Page-specific tokens ───────────────────────────────────────────────────*/
 :root {
-  --clr-bg:       #0f1117;
-  --clr-surface:  #1c1f2b;
-  --clr-border:   #2e3347;
-  --clr-text:     #e4e6f0;
-  --clr-muted:    #4a4f6a;
-  --clr-accent:   #3b82f6;
-  --clr-running:  #22c55e;
-  --clr-ramping:  #f59e0b;
-  --clr-stopped:  #4a4f6a;
-  --clr-danger:   #ef4444;
-  --clr-armed:    #22c55e;
-  --clr-disarmed: #ef4444;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --font: 'Inter', system-ui, sans-serif;
+  --clr-ramping: #f59e0b;
+  --clr-stopped: #4a4f6a;
+  --font: 'Inter', system-ui, sans-serif; /* override base font with Inter */
 }
 
-/* ── Reset ──────────────────────────────────────────────────────────────────*/
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+/* ── Body layout (extends base body) ───────────────────────────────────────*/
 body {
-  font-family: var(--font);
-  background:  var(--clr-bg);
-  color:       var(--clr-text);
-  min-height:  100dvh;
-  display:     flex;
+  display:         flex;
   justify-content: center;
-  align-items: flex-start;
-  padding:     16px;
+  align-items:     flex-start;
+  padding:         16px;
   overscroll-behavior: none;
 }
 
 /* ── Shell ──────────────────────────────────────────────────────────────────*/
 .shell {
-  width:     100%;
-  max-width: 480px;
-  display:   flex;
+  width:          100%;
+  max-width:      480px;
+  display:        flex;
   flex-direction: column;
-  gap:       14px;
+  gap:            14px;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────────*/
@@ -62,14 +49,14 @@ h1 {
 .header-right { display: flex; align-items: center; gap: 10px; }
 
 .settings-link {
-  display:     flex;
-  align-items: center;
-  font-size:   1.1rem;
-  color:       var(--clr-muted);
+  display:         flex;
+  align-items:     center;
+  font-size:       1.1rem;
+  color:           var(--clr-muted);
   text-decoration: none;
-  line-height: 1;
-  padding:     2px;
-  transition:  color 0.15s;
+  line-height:     1;
+  padding:         2px;
+  transition:      color 0.15s;
 }
 .settings-link:hover { color: var(--clr-text); }
 
@@ -94,8 +81,9 @@ h1 {
 .arm-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .arm-btn.disarmed .arm-dot { background: var(--clr-disarmed); }
 .arm-btn.armed    .arm-dot { background: var(--clr-armed); box-shadow: 0 0 5px var(--clr-armed); }
-.arm-btn.estopped  { border-color: var(--clr-ramping); color: var(--clr-ramping); animation: pulse-warn 0.8s ease-in-out infinite; }
+.arm-btn.estopped { border-color: var(--clr-ramping); color: var(--clr-ramping); animation: pulse-warn 0.8s ease-in-out infinite; }
 .arm-btn.estopped .arm-dot { background: var(--clr-ramping); }
+
 @keyframes pulse-warn { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 /* ── Connection badge ───────────────────────────────────────────────────────*/
@@ -124,17 +112,17 @@ h1 {
 .sys-stat.warn .sys-val { color: var(--clr-danger); }
 
 .mode-btn {
-  margin-left:  auto;
-  padding:      3px 10px;
-  border:       1px solid var(--clr-border);
+  margin-left:   auto;
+  padding:       3px 10px;
+  border:        1px solid var(--clr-border);
   border-radius: var(--radius-sm);
-  background:   transparent;
-  color:        var(--clr-muted);
-  font-size:    0.7rem;
-  font-family:  inherit;
-  cursor:       pointer;
-  transition:   border-color 0.15s, color 0.15s;
-  white-space:  nowrap;
+  background:    transparent;
+  color:         var(--clr-muted);
+  font-size:     0.7rem;
+  font-family:   inherit;
+  cursor:        pointer;
+  transition:    border-color 0.15s, color 0.15s;
+  white-space:   nowrap;
 }
 .mode-btn:hover { border-color: var(--clr-accent); color: var(--clr-text); }
 
@@ -154,7 +142,7 @@ h1 {
   user-select:   none;
   transition:    border-color 0.2s, opacity 0.2s;
 }
-#joystick-zone.disarmed          { opacity: 0.4; cursor: not-allowed; }
+#joystick-zone.disarmed              { opacity: 0.4; cursor: not-allowed; }
 #joystick-zone:active:not(.disarmed) { cursor: grabbing; }
 
 #joystick-zone::before,
@@ -186,14 +174,14 @@ h1 {
 }
 
 .track-card {
-  display:        grid;
+  display:            grid;
   grid-template-rows: auto auto auto auto auto;
-  gap:            6px;
-  padding:        14px;
-  background:     var(--clr-surface);
-  border:         1px solid var(--clr-border);
-  border-radius:  var(--radius-md);
-  transition:     border-color 0.2s;
+  gap:                6px;
+  padding:            14px;
+  background:         var(--clr-surface);
+  border:             1px solid var(--clr-border);
+  border-radius:      var(--radius-md);
+  transition:         border-color 0.2s;
 }
 .track-card[data-state="RUNNING"] { border-color: var(--clr-running); }
 .track-card[data-state="RAMP_UP"] { border-color: var(--clr-ramping); }
@@ -216,17 +204,17 @@ h1 {
 }
 
 .diag-summary {
-  padding:       9px 14px;
-  font-size:     0.72rem;
-  font-weight:   600;
-  color:         var(--clr-muted);
-  letter-spacing:0.04em;
-  cursor:        pointer;
-  list-style:    none;
-  display:       flex;
-  align-items:   center;
-  gap:           6px;
-  user-select:   none;
+  padding:        9px 14px;
+  font-size:      0.72rem;
+  font-weight:    600;
+  color:          var(--clr-muted);
+  letter-spacing: 0.04em;
+  cursor:         pointer;
+  list-style:     none;
+  display:        flex;
+  align-items:    center;
+  gap:            6px;
+  user-select:    none;
 }
 .diag-summary::-webkit-details-marker { display: none; }
 .diag-summary::before { content: '▶'; font-size: 0.6rem; transition: transform 0.15s; }
@@ -239,7 +227,9 @@ h1 {
   padding:               0 10px 10px;
 }
 
-/* ── Extended card (shared by diag drawer) ──────────────────────────────────*/.ext-card {  display:        flex;
+/* ── Extended card (used by diagnostics drawer) ─────────────────────────────*/
+.ext-card {
+  display:        flex;
   flex-direction: column;
   gap:            4px;
   padding:        10px 12px;
@@ -251,19 +241,19 @@ h1 {
 .ext-val   { font-size: 0.9rem; font-weight: 600; color: var(--clr-text); }
 
 /* ── Responsive ─────────────────────────────────────────────────────────────*/
-@media (min-width: 520px) { body { align-items: center; padding: 32px 16px; } }
+@media (min-width: 520px) {
+  body { align-items: center; padding: 32px 16px; }
+}
 
-@media (max-width: 380px)
-{
+@media (max-width: 380px) {
   .diag-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
-@media (max-height: 500px) and (orientation: landscape)
-{
+@media (max-height: 500px) and (orientation: landscape) {
   body { align-items: flex-start; padding: 8px; }
   .shell { max-width: none; flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
-  header   { flex: 1 1 100%; }
-  .sys-bar { flex: 1 1 100%; }
+  header            { flex: 1 1 100%; }
+  .sys-bar          { flex: 1 1 100%; }
   .joystick-section { flex: 0 0 auto; }
   #joystick-zone    { width: min(180px, 40vw); height: min(180px, 40vw); }
   .telemetry-grid   { flex: 1; grid-template-columns: 1fr; }

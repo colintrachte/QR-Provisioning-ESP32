@@ -1,38 +1,31 @@
 /* =============================================================================
  * setup.css — WiFi provisioning portal styles.
- * Kept separate from style.css so each page evolves independently.
+ * Requires base.css to be loaded first.
  * ============================================================================= */
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+/* ── Body layout ────────────────────────────────────────────────────────────*/
 body {
-  font-family: system-ui, sans-serif;
-  background:  #0f1117;
-  color:       #e4e6f0;
-  min-height:  100dvh;
-  display:     flex;
-  align-items: center;
+  display:         flex;
+  align-items:     center;
   justify-content: center;
-  padding:     24px;
+  padding:         24px;
 }
 
-/* ── Card ────────────────────────────────────────────────────────────────────*/
+/* ── Card (extends base .card — adds max-width and padding) ─────────────────*/
 .card {
-  width:         100%;
-  max-width:     380px;
-  background:    #1c1f2b;
-  border:        1px solid #2e3347;
-  border-radius: 14px;
-  padding:       32px 28px;
+  max-width: 380px;
+  padding:   32px 28px;
 }
 
+/* ── Page header ────────────────────────────────────────────────────────────*/
 .logo     { font-size: 2rem; text-align: center; margin-bottom: 6px; }
 h1        { font-size: 1.1rem; font-weight: 700; text-align: center; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; }
-.subtitle { font-size: 0.78rem; color: #4a4f6a; text-align: center; margin-bottom: 24px; }
+.subtitle { font-size: 0.78rem; color: var(--clr-muted); text-align: center; margin-bottom: 24px; }
 
-/* ── Network list ────────────────────────────────────────────────────────────*/
-.section-label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #4a4f6a; margin-bottom: 8px; }
+/* ── Section label (extends base — adds bottom margin) ─────────────────────*/
+.section-label { margin-bottom: 8px; }
 
+/* ── Network list ───────────────────────────────────────────────────────────*/
 #network-list {
   display:        flex;
   flex-direction: column;
@@ -42,34 +35,16 @@ h1        { font-size: 1.1rem; font-weight: 700; text-align: center; letter-spac
   overflow-y:     auto;
 }
 
-.network-btn {
-  display:         flex;
-  align-items:     center;
-  justify-content: space-between;
-  padding:         10px 12px;
-  background:      #0f1117;
-  border:          1px solid #2e3347;
-  border-radius:   8px;
-  color:           #e4e6f0;
-  font-size:       0.9rem;
-  font-family:     inherit;
-  cursor:          pointer;
-  text-align:      left;
-  transition:      border-color 0.15s, background 0.15s;
-  width:           100%;
-}
-.network-btn:hover,
-.network-btn.selected { border-color: #3b82f6; background: #13172a; }
-.network-name  { font-weight: 500; }
-.network-meta  { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.signal        { font-size: 0.8rem; color: #4a4f6a; }
-.scan-status   { font-size: 0.78rem; color: #4a4f6a; text-align: center; padding: 12px 0; }
+/* .network-btn and .network-meta — from base.css */
+.network-name { font-weight: 500; }
+.signal       { font-size: 0.8rem; color: var(--clr-muted); }
+.scan-status  { font-size: 0.78rem; color: var(--clr-muted); text-align: center; padding: 12px 0; }
 
 .rescan-btn {
   background:    none;
-  border:        1px solid #2e3347;
+  border:        1px solid var(--clr-border);
   border-radius: 6px;
-  color:         #4a4f6a;
+  color:         var(--clr-muted);
   font-size:     0.72rem;
   font-family:   inherit;
   padding:       4px 10px;
@@ -77,16 +52,18 @@ h1        { font-size: 1.1rem; font-weight: 700; text-align: center; letter-spac
   margin-left:   8px;
   transition:    border-color 0.15s, color 0.15s;
 }
-.rescan-btn:hover { border-color: #3b82f6; color: #e4e6f0; }
+.rescan-btn:hover { border-color: var(--clr-accent); color: var(--clr-text); }
 
 /* ── Form ────────────────────────────────────────────────────────────────────*/
+/* setup.html uses bare <label> and element-typed <input> selectors,
+   so these cannot be replaced by base.css classes. */
 label {
   display:        block;
   font-size:      0.72rem;
   font-weight:    600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color:          #4a4f6a;
+  color:          var(--clr-muted);
   margin-bottom:  6px;
 }
 
@@ -94,56 +71,43 @@ input[type="text"],
 input[type="password"] {
   width:         100%;
   padding:       10px 12px;
-  background:    #0f1117;
-  border:        1px solid #2e3347;
-  border-radius: 8px;
-  color:         #e4e6f0;
+  background:    var(--clr-bg);
+  border:        1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  color:         var(--clr-text);
   font-size:     1rem;
   font-family:   inherit;
   outline:       none;
   transition:    border-color 0.15s;
   margin-bottom: 16px;
 }
-input:focus { border-color: #3b82f6; }
+input:focus { border-color: var(--clr-accent); }
 
-.pass-wrap { position: relative; margin-bottom: 24px; }
+/* .pass-wrap and .toggle-pass — from base.css */
+.pass-wrap { margin-bottom: 24px; }
 .pass-wrap input { margin-bottom: 0; padding-right: 44px; }
 
-.toggle-pass {
-  position:   absolute;
-  right:      12px;
-  top:        50%;
-  transform:  translateY(-50%);
-  background: none;
-  border:     none;
-  color:      #4a4f6a;
-  cursor:     pointer;
-  font-size:  1rem;
-  padding:    4px;
-  line-height: 1;
-}
-.toggle-pass:hover { color: #e4e6f0; }
-
 button[type="submit"] {
-  width:       100%;
-  padding:     12px;
-  background:  #3b82f6;
-  color:       #fff;
-  border:      none;
-  border-radius: 8px;
-  font-size:   1rem;
-  font-weight: 600;
-  font-family: inherit;
-  cursor:      pointer;
-  transition:  background 0.15s, opacity 0.15s;
+  width:         100%;
+  padding:       12px;
+  background:    var(--clr-accent);
+  color:         #fff;
+  border:        none;
+  border-radius: var(--radius-sm);
+  font-size:     1rem;
+  font-weight:   600;
+  font-family:   inherit;
+  cursor:        pointer;
+  transition:    background 0.15s, opacity 0.15s;
 }
-button[type="submit"]:hover    { background: #2563eb; }
+button[type="submit"]:hover    { background: var(--clr-accent-hover); }
 button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
 
 /* ── Status ──────────────────────────────────────────────────────────────────*/
-.status        { margin-top: 14px; font-size: 0.8rem; text-align: center; color: #4a4f6a; min-height: 1.2em; }
-.status.error  { color: #ef4444; }
-.status.ok     { color: #4ade80; }
+/* base .status covers the base rule; setup adds colour modifiers */
+.status        { margin-top: 14px; }
+.status.error  { color: var(--clr-danger); }
+.status.ok     { color: var(--clr-success); }
 
 /* ── Skip / direct access ────────────────────────────────────────────────────*/
 .skip-wrap {
@@ -153,20 +117,20 @@ button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
   gap:             8px;
   margin-top:      18px;
   padding-top:     16px;
-  border-top:      1px solid #2e3347;
+  border-top:      1px solid var(--clr-border);
 }
-.skip-label { font-size: 0.75rem; color: #4a4f6a; }
-.skip-link  { font-size: 0.75rem; color: #3b82f6; text-decoration: none; font-weight: 600; }
+.skip-label { font-size: 0.75rem; color: var(--clr-muted); }
+.skip-link  { font-size: 0.75rem; color: var(--clr-accent); text-decoration: none; font-weight: 600; }
 .skip-link:hover { text-decoration: underline; }
 
 /* ── Hint ────────────────────────────────────────────────────────────────────*/
 .hint {
   margin-top:  22px;
   padding-top: 18px;
-  border-top:  1px solid #2e3347;
+  border-top:  1px solid var(--clr-border);
   font-size:   0.72rem;
-  color:       #4a4f6a;
+  color:       var(--clr-muted);
   text-align:  center;
   line-height: 1.7;
 }
-.hint strong { color: #e4e6f0; }
+.hint strong { color: var(--clr-text); }
