@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Robot Settings</title>
+  <link rel="stylesheet" href="/settings.css">
+</head>
+<body>
+  <div class="card">
+    <header class="page-header">
+      <a href="/" class="back-link">&#8592; Robot</a>
+      <h1>Settings</h1>
+      <span></span><!-- spacer -->
+    </header>
+
+    <!-- Tab bar -->
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="wifi"     role="tab">WiFi</button>
+      <button class="tab"        data-tab="firmware" role="tab">Firmware</button>
+      <button class="tab"        data-tab="webui"    role="tab">Web UI</button>
+    </nav>
+
+    <!-- ── WiFi tab ──────────────────────────────────────────────────────── -->
+    <section id="tab-wifi" class="tab-panel">
+      <div class="status-row" id="wifi-status-row">
+        <span class="status-dot connected" id="wifi-dot"></span>
+        <div>
+          <div class="status-primary" id="wifi-ssid">Loading…</div>
+          <div class="status-secondary" id="wifi-ip"></div>
+        </div>
+        <span class="signal-badge" id="wifi-signal"></span>
+      </div>
+
+      <div class="section-label">
+        Change network
+        <button class="ghost-btn" id="rescan-btn">&#8635; Scan</button>
+      </div>
+      <div id="network-list"><p class="list-placeholder">Press Scan to search</p></div>
+
+      <label class="field-label" for="ssid-input">Network name</label>
+      <input id="ssid-input" type="text" class="text-input"
+             placeholder="Or type manually"
+             autocomplete="off" autocorrect="off"
+             autocapitalize="none" spellcheck="false">
+
+      <label class="field-label" for="pass-input">Password</label>
+      <div class="pass-wrap">
+        <input id="pass-input" type="password" class="text-input"
+               placeholder="Leave blank if open network"
+               autocomplete="current-password">
+        <button type="button" class="toggle-pass" aria-label="Show/hide">&#128065;</button>
+      </div>
+
+      <button class="primary-btn" id="connect-btn">Save &amp; Reconnect</button>
+      <p class="field-hint">The device will reboot and join the new network.</p>
+
+      <div class="danger-zone">
+        <div class="danger-label">Danger zone</div>
+        <button class="danger-btn" id="erase-btn">Erase credentials &amp; reset</button>
+      </div>
+    </section>
+
+    <!-- ── Firmware tab ───────────────────────────────────────────────────── -->
+    <section id="tab-firmware" class="tab-panel hidden">
+      <p class="tab-intro">Upload a <code>.bin</code> built by PlatformIO to replace the running firmware. The device reboots automatically on success. If the new firmware fails to start, the previous version is restored automatically.</p>
+
+      <div class="drop-zone" id="fw-drop">
+        <div class="drop-icon">&#128190;</div>
+        <div class="drop-label">Drop <code>firmware.bin</code> here</div>
+        <div class="drop-sub">or <label class="file-link" for="fw-file">browse</label></div>
+        <input type="file" id="fw-file" accept=".bin" hidden>
+      </div>
+
+      <div id="fw-file-row" class="file-row hidden">
+        <span class="file-icon">&#128190;</span>
+        <span id="fw-file-name" class="file-name"></span>
+        <span id="fw-file-size" class="file-size"></span>
+        <button class="clear-btn" id="fw-clear">&#10005;</button>
+      </div>
+
+      <div class="progress-wrap hidden" id="fw-progress-wrap">
+        <div class="progress-bar" id="fw-progress-bar"></div>
+        <span class="progress-label" id="fw-progress-label">0%</span>
+      </div>
+
+      <button class="primary-btn" id="fw-upload-btn" disabled>Upload firmware</button>
+      <p class="status-msg" id="fw-status"></p>
+
+      <div class="build-hint">
+        <strong>Build path:</strong> <code>.pio/build/&lt;env&gt;/firmware.bin</code><br>
+        Run <code>pio run -e robot_esp32</code> to produce the binary.
+      </div>
+    </section>
+
+    <!-- ── Web UI tab ─────────────────────────────────────────────────────── -->
+    <section id="tab-webui" class="tab-panel hidden">
+      <p class="tab-intro">Upload a LittleFS image to replace the web interface files (HTML, CSS, JS). No reboot needed — the new files are served immediately.</p>
+
+      <div class="drop-zone" id="fs-drop">
+        <div class="drop-icon">&#127760;</div>
+        <div class="drop-label">Drop <code>littlefs.bin</code> here</div>
+        <div class="drop-sub">or <label class="file-link" for="fs-file">browse</label></div>
+        <input type="file" id="fs-file" accept=".bin" hidden>
+      </div>
+
+      <div id="fs-file-row" class="file-row hidden">
+        <span class="file-icon">&#127760;</span>
+        <span id="fs-file-name" class="file-name"></span>
+        <span id="fs-file-size" class="file-size"></span>
+        <button class="clear-btn" id="fs-clear">&#10005;</button>
+      </div>
+
+      <div class="progress-wrap hidden" id="fs-progress-wrap">
+        <div class="progress-bar" id="fs-progress-bar"></div>
+        <span class="progress-label" id="fs-progress-label">0%</span>
+      </div>
+
+      <button class="primary-btn" id="fs-upload-btn" disabled>Upload web UI</button>
+      <p class="status-msg" id="fs-status"></p>
+
+      <div class="build-hint">
+        <strong>Build path:</strong> <code>.pio/build/&lt;env&gt;/littlefs.bin</code><br>
+        Run <code>pio run -e robot_esp32 -t buildfs</code> to produce the image.
+      </div>
+    </section>
+
+  </div>
+  <script src="/settings.js"></script>
+</body>
+</html>

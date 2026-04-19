@@ -61,6 +61,18 @@ h1 {
 
 .header-right { display: flex; align-items: center; gap: 10px; }
 
+.settings-link {
+  display:     flex;
+  align-items: center;
+  font-size:   1.1rem;
+  color:       var(--clr-muted);
+  text-decoration: none;
+  line-height: 1;
+  padding:     2px;
+  transition:  color 0.15s;
+}
+.settings-link:hover { color: var(--clr-text); }
+
 /* ── Arm button ─────────────────────────────────────────────────────────────*/
 .arm-btn {
   display:        flex;

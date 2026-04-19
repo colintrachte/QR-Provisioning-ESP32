@@ -93,6 +93,15 @@ static esp_err_t handle_css(httpd_req_t *req)
 static esp_err_t handle_js(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/script.js",  "application/javascript"); }
 
+static esp_err_t handle_settings(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/settings.html", "text/html"); }
+
+static esp_err_t handle_settings_css(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/settings.css", "text/css"); }
+
+static esp_err_t handle_settings_js(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/settings.js",  "application/javascript"); }
+
 static esp_err_t handle_favicon(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "204 No Content");
@@ -103,6 +112,243 @@ static esp_err_t handle_favicon(httpd_req_t *req)
 static esp_err_t handle_404(httpd_req_t *req)
 {
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
+    return ESP_OK;
+}
+
+/* ── Settings API endpoints ─────────────────────────────────────────────────
+ *
+ * GET  /api/status      — JSON: current WiFi state (ssid, ip, rssi, connected)
+ * GET  /api/scan        — JSON: cached AP list, or {"status":"scanning"}.
+ *                         ?refresh=1 triggers a fresh scan before returning.
+ * POST /api/connect     — body: ssid=&pass=  → save to NVS and reboot
+ * POST /api/erase       — erase credentials and reboot into provisioning
+ *
+ * Scan results are cached from the last esp_wifi_scan. In STA mode a scan
+ * causes a brief (~100 ms) disconnection on some APs — acceptable for a
+ * settings page triggered by user action. The cached result is served
+ * immediately; a background task rebuilds it when ?refresh=1 is passed. */
+
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+
+/* NVS namespace/keys must match wifi_manager.c */
+#define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
+#define SETTINGS_NVS_KEY_SSID   "ssid"
+#define SETTINGS_NVS_KEY_PASS   "pass"
+
+/* ── Scan cache ─────────────────────────────────────────────────────────────*/
+#define MAX_SCAN_APS  20
+
+typedef struct {
+    char ssid[33];
+    int  rssi;
+    int  quality;      /* 0-100 */
+    bool secure;
+} scan_ap_t;
+
+static SemaphoreHandle_t s_scan_mutex   = NULL;
+static scan_ap_t         s_scan_aps[MAX_SCAN_APS];
+static int               s_scan_count  = 0;
+static bool              s_scan_ready  = false;
+static volatile bool     s_scan_running = false;
+
+static void scan_task(void *arg)
+{
+    wifi_scan_config_t cfg = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+    s_scan_running = true;
+
+    if (esp_wifi_scan_start(&cfg, true) == ESP_OK) {
+        uint16_t count = MAX_SCAN_APS;
+        wifi_ap_record_t *recs = calloc(MAX_SCAN_APS, sizeof(wifi_ap_record_t));
+        if (recs) {
+            esp_wifi_scan_get_ap_records(&count, recs);
+
+            xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+            s_scan_count = 0;
+            for (int i = 0; i < (int)count && s_scan_count < MAX_SCAN_APS; i++) {
+                if (recs[i].ssid[0] == '\0') continue;
+                /* JSON-escape backslash and quote in SSID */
+                int si = 0;
+                for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
+                    char c = (char)recs[i].ssid[j];
+                    if ((c == '"' || c == '\\') && si < 31)
+                        s_scan_aps[s_scan_count].ssid[si++] = '\\';
+                    if (si < 32) s_scan_aps[s_scan_count].ssid[si++] = c;
+                }
+                s_scan_aps[s_scan_count].ssid[si] = '\0';
+                s_scan_aps[s_scan_count].rssi    = recs[i].rssi;
+                s_scan_aps[s_scan_count].quality =
+                    recs[i].rssi <= -100 ? 0 : recs[i].rssi >= -40 ? 100 :
+                    2 * (recs[i].rssi + 100);
+                s_scan_aps[s_scan_count].secure  =
+                    (recs[i].authmode != WIFI_AUTH_OPEN);
+                s_scan_count++;
+            }
+            s_scan_ready = true;
+            xSemaphoreGive(s_scan_mutex);
+            free(recs);
+            ESP_LOGI(TAG, "Scan complete: %d APs", s_scan_count);
+        }
+    }
+    s_scan_running = false;
+    vTaskDelete(NULL);
+}
+
+static void trigger_scan(void)
+{
+    if (!s_scan_running)
+        xTaskCreate(scan_task, "settings_scan", 4096, NULL, 3, NULL);
+}
+
+/* GET /api/status */
+static esp_err_t handle_api_status(httpd_req_t *req)
+{
+    wifi_ap_record_t ap  = {0};
+    bool connected       = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
+    char ip[16]          = {0};
+    char ssid[33]        = {0};
+
+    if (connected) {
+        esp_netif_ip_info_t info = {0};
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif) esp_netif_get_ip_info(netif, &info);
+        snprintf(ip,   sizeof(ip),   IPSTR, IP2STR(&info.ip));
+        snprintf(ssid, sizeof(ssid), "%s",  (char *)ap.ssid);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+        "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d}",
+        connected ? "true" : "false", ssid, ip,
+        connected ? (int)ap.rssi : 0);
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* GET /api/scan  — ?refresh=1 triggers a new scan */
+static esp_err_t handle_api_scan(httpd_req_t *req)
+{
+    /* Check for ?refresh=1 */
+    char query[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        strstr(query, "refresh=1"))
+        trigger_scan();
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+
+    if (!s_scan_ready || s_scan_running) {
+        httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
+        return ESP_OK;
+    }
+
+    char *buf = malloc(MAX_SCAN_APS * 100 + 8);
+    if (!buf) { httpd_resp_send_500(req); return ESP_OK; }
+
+    int pos = 0;
+    buf[pos++] = '[';
+    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_scan_count; i++) {
+        pos += snprintf(buf + pos, MAX_SCAN_APS * 100 - pos,
+            "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
+            i ? "," : "",
+            s_scan_aps[i].ssid,
+            s_scan_aps[i].quality,
+            s_scan_aps[i].secure ? "true" : "false");
+    }
+    xSemaphoreGive(s_scan_mutex);
+    buf[pos++] = ']';
+    buf[pos]   = '\0';
+
+    httpd_resp_sendstr(req, buf);
+    free(buf);
+    return ESP_OK;
+}
+
+/* POST /api/connect — body: ssid=<url-encoded>&pass=<url-encoded> */
+static void url_decode(const char *src, char *dst, int dst_size)
+{
+    int out = 0;
+    while (*src && out < dst_size - 1) {
+        if (src[0] == '%' && src[1] && src[2]) {
+            char hex[3] = { src[1], src[2], '\0' };
+            dst[out++] = (char)strtol(hex, NULL, 16);
+            src += 3;
+        } else if (src[0] == '+') { dst[out++] = ' '; src++; }
+        else { dst[out++] = *src++; }
+    }
+    dst[out] = '\0';
+}
+
+static esp_err_t handle_api_connect(httpd_req_t *req)
+{
+    char body[320] = {0};
+    int n = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty"); return ESP_OK; }
+
+    /* Extract and decode ssid= and pass= fields */
+    char ssid_enc[128] = {0}, pass_enc[128] = {0};
+    char ssid[64] = {0}, pass[64] = {0};
+
+    const char *p;
+    if ((p = strstr(body, "ssid=")) != NULL) {
+        p += 5;
+        const char *e = strchr(p, '&');
+        int len = e ? (int)(e - p) : (int)strlen(p);
+        if (len >= (int)sizeof(ssid_enc)) len = sizeof(ssid_enc) - 1;
+        memcpy(ssid_enc, p, len);
+    }
+    if ((p = strstr(body, "pass=")) != NULL) {
+        p += 5;
+        const char *e = strchr(p, '&');
+        int len = e ? (int)(e - p) : (int)strlen(p);
+        if (len >= (int)sizeof(pass_enc)) len = sizeof(pass_enc) - 1;
+        memcpy(pass_enc, p, len);
+    }
+    url_decode(ssid_enc, ssid, sizeof(ssid));
+    url_decode(pass_enc, pass, sizeof(pass));
+
+    if (!ssid[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required"); return ESP_OK; }
+
+    /* Write to NVS — same namespace/keys as wifi_manager uses */
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_str(nvs, SETTINGS_NVS_KEY_SSID, ssid);
+        nvs_set_str(nvs, SETTINGS_NVS_KEY_PASS, pass);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+        ESP_LOGI(TAG, "Credentials updated via settings page: SSID=%s", ssid);
+    } else {
+        ESP_LOGE(TAG, "NVS open failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS error");
+        return ESP_OK;
+    }
+
+    httpd_resp_sendstr(req, "Saved — rebooting");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return ESP_OK;
+}
+
+/* POST /api/erase — erase credentials and reboot into provisioning */
+static esp_err_t handle_api_erase(httpd_req_t *req)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, SETTINGS_NVS_KEY_SSID);
+        nvs_erase_key(nvs, SETTINGS_NVS_KEY_PASS);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    httpd_resp_sendstr(req, "Erased — rebooting");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
     return ESP_OK;
 }
 
@@ -233,13 +479,14 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
 esp_err_t app_server_start(void)
 {
-    s_ws_mutex = xSemaphoreCreateMutex();
+    s_ws_mutex   = xSemaphoreCreateMutex();
+    s_scan_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
 
     fs_mount();
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 12;   /* 6 app routes + 2 OTA endpoints + headroom */
+    cfg.max_uri_handlers = 20;   /* app + settings + API + OTA endpoints */
     cfg.lru_purge_enable = true;
     cfg.uri_match_fn     = httpd_uri_match_wildcard;  /* required for wildcard */
 
@@ -250,13 +497,24 @@ esp_err_t app_server_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        { .uri="/",            .method=HTTP_GET, .handler=handle_index   },
-        { .uri="/style.css",   .method=HTTP_GET, .handler=handle_css     },
-        { .uri="/script.js",   .method=HTTP_GET, .handler=handle_js      },
-        { .uri="/favicon.ico", .method=HTTP_GET, .handler=handle_favicon },
-        { .uri="/ws",          .method=HTTP_GET, .handler=ws_handler,
-          .is_websocket=true                                              },
-        { .uri="/*",           .method=HTTP_GET, .handler=handle_404     },
+        /* Static files */
+        { .uri="/",              .method=HTTP_GET,  .handler=handle_index       },
+        { .uri="/style.css",     .method=HTTP_GET,  .handler=handle_css         },
+        { .uri="/script.js",     .method=HTTP_GET,  .handler=handle_js          },
+        { .uri="/settings",      .method=HTTP_GET,  .handler=handle_settings    },
+        { .uri="/settings.css",  .method=HTTP_GET,  .handler=handle_settings_css},
+        { .uri="/settings.js",   .method=HTTP_GET,  .handler=handle_settings_js },
+        { .uri="/favicon.ico",   .method=HTTP_GET,  .handler=handle_favicon     },
+        /* Settings API */
+        { .uri="/api/status",    .method=HTTP_GET,  .handler=handle_api_status  },
+        { .uri="/api/scan",      .method=HTTP_GET,  .handler=handle_api_scan    },
+        { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect },
+        { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase   },
+        /* WebSocket */
+        { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
+          .is_websocket=true                                                     },
+        /* Catch-all */
+        { .uri="/*",             .method=HTTP_GET,  .handler=handle_404         },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
