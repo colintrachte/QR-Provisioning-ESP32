@@ -70,7 +70,7 @@
 /* Sign convention for this board's motor wiring. See header for explanation. */
 #define DRIVE_LEFT_SIGN  -1
 #define DRIVE_RIGHT_SIGN  1
-#include "../../shared/drive_mixer.h"
+#include "drive_mixer.h"
 
 /* ── Identity ────────────────────────────────────────────────────────────────*/
 static constexpr char HOSTNAME[]   = "rc-tank";
@@ -615,7 +615,7 @@ static void startNormalMode(const String &ssid, const String &pass)
             resp->addHeader("Connection", "close");
             req->send(resp);
             if (ok) {
-                vTaskDelay(500);   /* give response time to reach browser */
+                delay(500);   /* give response time to reach browser */
                 ESP.restart();
             }
         },
@@ -633,8 +633,7 @@ static void startNormalMode(const String &ssid, const String &pass)
             }
 #endif
             if (index == 0) {
-                Serial.printf("Firmware OTA start, size=%u
-", (unsigned)total);
+                Serial.printf("Firmware OTA start, size=%u", (unsigned)total);
                 /* U_FLASH = sketch partition. Free space must exceed total. */
                 if (!Update.begin(total, U_FLASH)) {
                     Update.printError(Serial);
@@ -649,8 +648,7 @@ static void startNormalMode(const String &ssid, const String &pass)
                 if (!Update.end(true)) {
                     Update.printError(Serial);
                 }
-                Serial.printf("Firmware OTA complete (%u bytes)
-", (unsigned)total);
+                Serial.printf("Firmware OTA complete (%u bytes)", (unsigned)total);
             }
         });
 
@@ -677,8 +675,7 @@ static void startNormalMode(const String &ssid, const String &pass)
             }
 #endif
             if (index == 0) {
-                Serial.printf("Filesystem OTA start, size=%u
-", (unsigned)total);
+                Serial.printf("Filesystem OTA start, size=%u", (unsigned)total);
                 LittleFS.end();   /* unmount before writing */
                 if (!Update.begin(total, U_FS)) {
                     Update.printError(Serial);
@@ -694,8 +691,7 @@ static void startNormalMode(const String &ssid, const String &pass)
                     Update.printError(Serial);
                 } else {
                     LittleFS.begin();   /* remount */
-                    Serial.printf("Filesystem OTA complete (%u bytes)
-", (unsigned)total);
+                    Serial.printf("Filesystem OTA complete (%u bytes)", (unsigned)total);
                 }
             }
         });
