@@ -194,7 +194,7 @@ static void render_connected(void)
 
         /* IP on a dedicated full-width row — guaranteed no wrapping. */
         int ip_y = DISP_HEIGHT - IP_ROW_H;
-        display_draw_hline(0, ip_y - 1, DISP_WIDTH);
+        //do NOT draw an hline above the IP row — it would bisect the QR code and make it unscannable
         display_draw_text(0, ip_y, s_ip, DISP_FONT_SMALL);
     }
 
