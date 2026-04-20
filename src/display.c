@@ -294,7 +294,7 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
         return;
     }
 
-    int quiet = (scale >= 3) ? 0 : (scale * 2);
+    int quiet = 0;//(scale >= 3) ? 0 : (scale * 2);//we don't have room for this.
     int total = size * scale + quiet * 2;
 
     if (x + total > DISP_WIDTH || y + total > DISP_HEIGHT) {
