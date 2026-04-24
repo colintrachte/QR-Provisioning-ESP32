@@ -74,14 +74,32 @@ void i_battery_init(void)
         return;
     }
 
-    /* Attempt curve-fitting calibration (requires burned eFuse data) */
+    /* Calibration scheme selection
+     * ─────────────────────────────
+     * ESP32-S3 supports curve_fitting (higher accuracy, uses eFuse OTP data).
+     * Plain ESP32 (LX6) only has line_fitting — curve_fitting is S3/C3+.
+     * Both fall back gracefully if eFuse calibration data was not burned. */
+    esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) \
+ || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2)
     adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id  = BATTERY_ADC_UNIT,
         .chan     = BATTERY_ADC_CHANNEL,
         .atten    = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    esp_err_t err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali_handle);
+    err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali_handle);
+#else
+    /* ESP32 (LX6), ESP32-S2, and any other target: use line_fitting */
+    adc_cali_line_fitting_config_t cali_cfg = {
+        .unit_id  = BATTERY_ADC_UNIT,
+        .atten    = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    err = adc_cali_create_scheme_line_fitting(&cali_cfg, &s_cali_handle);
+#endif
+
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "ADC calibration not available — readings will be uncalibrated");
         s_cali_handle = NULL;
