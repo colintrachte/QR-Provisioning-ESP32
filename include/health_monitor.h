@@ -32,6 +32,7 @@ void health_monitor_init(void);
  */
 void health_monitor_tick(void);
 
+void list_storage_contents(void);
 /**
  * Return the most recently measured RSSI in dBm, or 0 if not connected.
  */

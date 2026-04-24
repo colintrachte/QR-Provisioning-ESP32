@@ -26,6 +26,42 @@ static int8_t  s_rssi             = 0;
 static uint32_t s_last_rssi_ms    = 0;
 static char    s_json[HEALTH_JSON_BUF_LEN];
 
+/*filesystem listing*/
+
+/**
+ * Lists all files in the LittleFS 'storage' partition.
+ * The path "/storage" matches the label in your partitions_8mb.csv.
+ */
+void list_storage_contents(void)
+{
+    const char *base_path = "/storage";
+    DIR *dir = opendir(base_path);
+
+    if (dir == NULL)
+    {
+        ESP_LOGE(TAG, "health_monitor_init — LittleFS: MOUNT_NOT_FOUND");
+        return;
+    }
+
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL)
+    {
+        // Filter out the directory navigation entries
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+        {
+            continue;
+        }
+
+        // Formatted per request: ESP_LOGI(TAG, "context — filename: PRESENT");
+        ESP_LOGI(TAG, "health_monitor_init — %s: %s",
+                 entry->d_name,
+                 "PRESENT");
+    }
+
+    closedir(dir);
+}
+
 /* ── RSSI ───────────────────────────────────────────────────────────────────*/
 
 static void check_rssi(void)

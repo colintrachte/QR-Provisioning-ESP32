@@ -47,6 +47,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_wifi.h"
+#include "esp_event.h"
 #include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -72,7 +73,10 @@ static void fs_mount(void)
         .format_if_mount_failed = true,   /* don't silently fail on blank flash */
     };
     if (esp_vfs_littlefs_register(&cfg) == ESP_OK)
+    {
         s_mounted = true;
+        ESP_LOGE(TAG, "LittleFS mount succeeded");
+    }
     else
         ESP_LOGE(TAG, "LittleFS mount failed (run: pio run -t uploadfs)");
 }
@@ -129,10 +133,36 @@ static volatile bool      s_scan_run    = false;
  * scanning while a STA connection attempt is in progress. */
 volatile int portal_retry_count = 0;
 
+/* ── Background scan task ───────────────────────────────────────────────────
+ *
+ * Uses non-blocking esp_wifi_scan_start() to avoid going off-channel during
+ * an AP client association. A blocking scan (true) parks the radio on each
+ * channel in turn; if a phone tries to join the SoftAP while the scan is
+ * dwelling on a different channel the association probe is missed, and on
+ * ESP32-S3 the WiFi driver can abort internally.
+ *
+ * Non-blocking scan: returns immediately. Results are signalled by
+ * WIFI_EVENT_SCAN_DONE, which sets s_scan_done_bit in s_scan_evt_grp.
+ * scan_task waits on that bit (yielding to the scheduler) rather than
+ * blocking the radio.
+ */
+#define SCAN_DONE_BIT BIT0
+
+static EventGroupHandle_t s_scan_evt_grp = NULL;
+
+/* Called from the WiFi event task — only sets the event bit. */
+static void scan_done_cb(void *arg, esp_event_base_t base,
+                         int32_t id, void *data)
+{
+    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE && s_scan_evt_grp)
+        xEventGroupSetBits(s_scan_evt_grp, SCAN_DONE_BIT);
+}
+
 static void scan_task(void *arg)
 {
     (void)arg;
     while (s_scan_run) {
+        /* Pause while a STA connection attempt is in progress. */
         while (portal_retry_count > 0 && s_scan_run)
             vTaskDelay(pdMS_TO_TICKS(500));
         if (!s_scan_run) break;
@@ -141,7 +171,23 @@ static void scan_task(void *arg)
             .show_hidden = false,
             .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
         };
-        if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
+        /* Non-blocking: returns immediately, radio stays on AP channel between
+         * probe bursts. WIFI_EVENT_SCAN_DONE fires when all channels are done. */
+        if (esp_wifi_scan_start(&sc, false) != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            continue;
+        }
+
+        /* Wait up to 8 s for the scan to complete. A full 13-channel active
+         * scan with default dwell times takes roughly 2–3 s. */
+        EventBits_t bits = xEventGroupWaitBits(s_scan_evt_grp, SCAN_DONE_BIT,
+                                               pdTRUE, pdFALSE,
+                                               pdMS_TO_TICKS(8000));
+        if (!s_scan_run) break;
+        if (!(bits & SCAN_DONE_BIT)) {
+            /* Timeout — the scan may have been aborted by a STA event.
+             * Discard partial results and wait before retrying. */
+            esp_wifi_scan_stop();
             vTaskDelay(pdMS_TO_TICKS(3000));
             continue;
         }
@@ -468,8 +514,14 @@ void portal_start(const char *ap_ssid)
 {
     (void)ap_ssid;
 
-    s_event_group = xEventGroupCreate();
+    s_event_group  = xEventGroupCreate();
+    s_scan_evt_grp = xEventGroupCreate();
     if (!s_scan_mutex) s_scan_mutex = xSemaphoreCreateMutex();
+
+    /* Register for SCAN_DONE before starting the scan task so no event
+     * is missed if the first scan completes very quickly. */
+    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                scan_done_cb, NULL);
 
     fs_mount();
     start_httpd();
@@ -487,6 +539,13 @@ void portal_start(const char *ap_ssid)
 void portal_stop(void)
 {
     s_scan_run = false;
+
+    /* Unregister scan handler before deleting the event group it writes to.
+     * Order matters: unregister first so no in-flight SCAN_DONE event tries
+     * to set a bit on an already-deleted group. */
+    esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, scan_done_cb);
+    if (s_scan_evt_grp) { vEventGroupDelete(s_scan_evt_grp); s_scan_evt_grp = NULL; }
+
     stop_dns();
     if (s_httpd) { httpd_stop(s_httpd); s_httpd = NULL; }
     if (s_event_group) { vEventGroupDelete(s_event_group); s_event_group = NULL; }
