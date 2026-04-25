@@ -1,42 +1,18 @@
 /**
  * portal.c — SoftAP captive portal.
  *
- * DNS hijack
- * ──────────
- * A raw UDP socket on port 53 answers every A-record query with AP_GW_IP.
- * SO_RCVTIMEO of 1 s lets dns_task check s_dns_run and exit cleanly
- * when portal_stop() sets the flag and closes the socket.
+ * Scan model: blocking, manual refresh only.
+ *   - One scan at portal startup (safe: no clients yet).
+ *   - GET /api/scan returns cached result immediately.
+ *   - GET /api/rescan runs a fresh blocking scan (~3 s) and returns JSON.
  *
- * OS captive-portal probes
- * ────────────────────────
- *   Windows:  GET /connecttest.txt   → "Microsoft Connect Test"
- *             GET /ncsi.txt          → "Microsoft NCSI"
- *             GET /redirect          → 302 to msftconnecttest.com
- *   iOS:      GET /hotspot-detect.html → Success HTML
- *             GET /library/test/success.html
- *   Android:  GET /generate_204, /gen_204 → 204
- *
- * Catch-all: any unrecognised URI → 302 to http://AP_GW_IP/
- * Requires cfg.uri_match_fn = httpd_uri_match_wildcard so matches last.
- *
- * Network scan
- * ────────────
- * scan_task runs in the background and refreshes the AP list every
- * SCAN_INTERVAL_MS. GET /api/scan returns the cached result immediately —
- * it never blocks the httpd task for the ~3 s a live scan takes.
- * The scan_task pauses while a STA connection attempt is in progress.
- *
- * File serving
- * ────────────
- * Uses a serve_file() helper called from explicit named route handlers.
- * Dynamic URI→path concatenation is deliberately avoided: httpd URIs can be
- * up to CONFIG_HTTPD_MAX_URI_LEN (512 B) and would overflow any fixed buffer
- * when prepending the "/littlefs" base path.
+ * No background scan task = no radio channel-hopping while a phone is
+ * trying to associate. This eliminates the missed-probe reboot bug.
  */
 
 #include "portal.h"
 #include "config.h"
-#include "vfs_mount.h"   /* NEW: shared mount helper */
+#include "vfs_mount.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -48,7 +24,6 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_wifi.h"
-#include "esp_event.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -56,17 +31,10 @@
 
 static const char *TAG = "portal";
 
-/* ── LittleFS ───────────────────────────────────────────────────────────────
- * Partition label must match partitions.csv — original used "storage".
- */
-#define FS_BASE  "/littlefs"
-#define FS_PART  "storage"
-#define SERVE_CHUNK 1024
+#define FS_BASE       "/littlefs"
+#define SERVE_CHUNK   1024
 
-/* ── File serving helper ────────────────────────────────────────────────────
- * "rb" mode: LittleFS stores files with LF endings; text mode would corrupt
- * byte counts on platforms that translate line endings.
- */
+/* ── File serving helper ───────────────────────────────────────────────────*/
 static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *mime)
 {
     FILE *f = fopen(path, "rb");
@@ -87,21 +55,20 @@ static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *mime
     return ESP_OK;
 }
 
-/* ── Credentials ────────────────────────────────────────────────────────────*/
+/* ── Credentials ───────────────────────────────────────────────────────────*/
 static char s_ssid[33] = {0};
 static char s_pass[65] = {0};
 
-/* ── Synchronisation ────────────────────────────────────────────────────────*/
+/* ── Synchronisation ──────────────────────────────────────────────────────*/
 #define CREDS_RECEIVED_BIT BIT0
 static EventGroupHandle_t s_event_group = NULL;
 
-/* ── Background scan task ───────────────────────────────────────────────────*/
+/* ── Scan cache ────────────────────────────────────────────────────────────*/
 #define SCAN_MAX_APS     20
-#define SCAN_INTERVAL_MS 12000
 
 typedef struct {
-    char ssid[64];   /* JSON-escaped, safe for direct embedding */
-    int  quality;    /* 0–100 derived from RSSI                 */
+    char ssid[64];   /* JSON-escaped */
+    int  quality;    /* 0–100 derived from RSSI */
     bool secure;
 } ap_cache_t;
 
@@ -109,135 +76,85 @@ static SemaphoreHandle_t  s_scan_mutex  = NULL;
 static ap_cache_t         s_scan_aps[SCAN_MAX_APS];
 static int                s_scan_count  = 0;
 static bool               s_scan_ready  = false;
-static volatile bool      s_scan_run    = false;
 
-/* Written by wifi_manager event handler, read by scan_task to avoid
- * scanning while a STA connection attempt is in progress. */
-volatile int portal_retry_count = 0;
-
-/* ── Background scan task ───────────────────────────────────────────────────
- *
- * Uses non-blocking esp_wifi_scan_start() to avoid going off-channel during
- * an AP client association. A blocking scan (true) parks the radio on each
- * channel in turn; if a phone tries to join the SoftAP while the scan is
- * dwelling on a different channel the association probe is missed, and on
- * ESP32-S3 the WiFi driver can abort internally.
- *
- * Non-blocking scan: returns immediately. Results are signalled by
- * WIFI_EVENT_SCAN_DONE, which sets s_scan_done_bit in s_scan_evt_grp.
- * scan_task waits on that bit (yielding to the scheduler) rather than
- * blocking the radio.
+/* ── Blocking scan ─────────────────────────────────────────────────────────
+ * Called once at startup and on explicit GET /api/rescan.
+ * Radio is off-channel for ~3 s; no AP clients can be present because
+ * we only call this before the phone joins or when user clicks Rescan.
  */
-#define SCAN_DONE_BIT BIT0
-
-static EventGroupHandle_t s_scan_evt_grp = NULL;
-
-/* Called from the WiFi event task — only sets the event bit. */
-static void scan_done_cb(void *arg, esp_event_base_t base,
-                         int32_t id, void *data)
+static void run_scan_once(void)
 {
-    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE && s_scan_evt_grp)
-        xEventGroupSetBits(s_scan_evt_grp, SCAN_DONE_BIT);
-}
+    ESP_LOGI(TAG, "scan: starting blocking scan");
 
-static void scan_task(void *arg)
-{
-    (void)arg;
-    while (s_scan_run) {
-        /* Pause while a STA connection attempt is in progress. */
-        while (portal_retry_count > 0 && s_scan_run)
-            vTaskDelay(pdMS_TO_TICKS(500));
-        if (!s_scan_run) break;
+    wifi_scan_config_t sc = {
+        .show_hidden = false,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+    };
 
-        wifi_scan_config_t sc = {
-            .show_hidden = false,
-            .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
-        };
-        /* Non-blocking: returns immediately, radio stays on AP channel between
-         * probe bursts. WIFI_EVENT_SCAN_DONE fires when all channels are done. */
-        if (esp_wifi_scan_start(&sc, false) != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            continue;
-        }
-
-        /* Wait up to 8 s for the scan to complete. A full 13-channel active
-         * scan with default dwell times takes roughly 2–3 s. */
-        EventBits_t bits = xEventGroupWaitBits(s_scan_evt_grp, SCAN_DONE_BIT,
-                                               pdTRUE, pdFALSE,
-                                               pdMS_TO_TICKS(8000));
-        if (!s_scan_run) break;
-        if (!(bits & SCAN_DONE_BIT)) {
-            /* Timeout — the scan may have been aborted by a STA event.
-             * Discard partial results and wait before retrying. */
-            esp_wifi_scan_stop();
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            continue;
-        }
-
-        uint16_t count = SCAN_MAX_APS;
-        wifi_ap_record_t *recs = calloc(SCAN_MAX_APS, sizeof(wifi_ap_record_t));
-        if (!recs) { vTaskDelay(pdMS_TO_TICKS(3000)); continue; }
-        esp_wifi_scan_get_ap_records(&count, recs);
-
-        xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-        s_scan_count = 0;
-        for (int i = 0; i < (int)count && s_scan_count < SCAN_MAX_APS; i++) {
-            if (recs[i].ssid[0] == '\0') continue;
-
-            /* JSON-escape " and \ so the SSID is safe inside a JSON string.
-             * The output buffer is 64 bytes; a 32-char SSID with every char
-             * escaped needs at most 64 bytes + null — exactly fits. */
-            int si = 0;
-            for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
-                char c = (char)recs[i].ssid[j];
-                if ((c == '"' || c == '\\') &&
-                    si < (int)sizeof(s_scan_aps[0].ssid) - 2)
-                    s_scan_aps[s_scan_count].ssid[si++] = '\\';
-                if (si < (int)sizeof(s_scan_aps[0].ssid) - 1)
-                    s_scan_aps[s_scan_count].ssid[si++] = c;
-            }
-            s_scan_aps[s_scan_count].ssid[si] = '\0';
-
-            int rssi = recs[i].rssi;
-            s_scan_aps[s_scan_count].quality =
-                rssi <= -100 ? 0 : rssi >= -40 ? 100 : 2 * (rssi + 100);
-            s_scan_aps[s_scan_count].secure =
-                (recs[i].authmode != WIFI_AUTH_OPEN);
-            s_scan_count++;
-        }
-        s_scan_ready = true;
-        xSemaphoreGive(s_scan_mutex);
-
-        ESP_LOGI(TAG, "scan_task: %d APs cached", s_scan_count);
-        free(recs);
-        vTaskDelay(pdMS_TO_TICKS(SCAN_INTERVAL_MS));
+    if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
+        ESP_LOGW(TAG, "scan: start failed");
+        return;
     }
-    vTaskDelete(NULL);
+
+    uint16_t count = SCAN_MAX_APS;
+    wifi_ap_record_t *recs = calloc(SCAN_MAX_APS, sizeof(wifi_ap_record_t));
+    if (!recs) return;
+
+    esp_wifi_scan_get_ap_records(&count, recs);
+
+    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+    s_scan_count = 0;
+    for (int i = 0; i < (int)count && s_scan_count < SCAN_MAX_APS; i++) {
+        if (recs[i].ssid[0] == '\0') continue;
+
+        int si = 0;
+        for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
+            char c = (char)recs[i].ssid[j];
+            if ((c == '"' || c == '\\') &&
+                si < (int)sizeof(s_scan_aps[0].ssid) - 2)
+                s_scan_aps[s_scan_count].ssid[si++] = '\\';
+            if (si < (int)sizeof(s_scan_aps[0].ssid) - 1)
+                s_scan_aps[s_scan_count].ssid[si++] = c;
+        }
+        s_scan_aps[s_scan_count].ssid[si] = '\0';
+
+        int rssi = recs[i].rssi;
+        s_scan_aps[s_scan_count].quality =
+            rssi <= -100 ? 0 : rssi >= -40 ? 100 : 2 * (rssi + 100);
+        s_scan_aps[s_scan_count].secure =
+            (recs[i].authmode != WIFI_AUTH_OPEN);
+        s_scan_count++;
+    }
+    s_scan_ready = true;
+    xSemaphoreGive(s_scan_mutex);
+
+    ESP_LOGI(TAG, "scan: %d APs cached", s_scan_count);
+    free(recs);
 }
 
-/* ── DNS hijack ─────────────────────────────────────────────────────────────*/
+/* ── DNS hijack ────────────────────────────────────────────────────────────*/
 static int           s_dns_sock = -1;
 static volatile bool s_dns_run  = false;
 
 static void dns_reply(int sock, struct sockaddr_in *client,
                       const uint8_t *query, int qlen)
 {
-    if (qlen < 12 || qlen > 496) return;   /* 496 + 16 answer = 512 max */
+    if (qlen < 12 || qlen > 496) return;
 
     uint8_t  resp[512];
     uint32_t gw = inet_addr(AP_GW_IP);
     memcpy(resp, query, qlen);
-    resp[2] = 0x81; resp[3] = 0x80;            /* QR=1 RA=1, RCODE=0    */
-    resp[6] = 0x00; resp[7] = 0x01;            /* ANCOUNT = 1           */
+    resp[2] = 0x81; resp[3] = 0x80;
+    resp[6] = 0x00; resp[7] = 0x01;
     resp[8] = resp[9] = resp[10] = resp[11] = 0;
 
     int pos = qlen;
-    resp[pos++] = 0xC0; resp[pos++] = 0x0C;   /* name ptr to offset 12 */
-    resp[pos++] = 0x00; resp[pos++] = 0x01;   /* TYPE A                */
-    resp[pos++] = 0x00; resp[pos++] = 0x01;   /* CLASS IN              */
+    resp[pos++] = 0xC0; resp[pos++] = 0x0C;
+    resp[pos++] = 0x00; resp[pos++] = 0x01;
+    resp[pos++] = 0x00; resp[pos++] = 0x01;
     resp[pos++] = 0x00; resp[pos++] = 0x00;
-    resp[pos++] = 0x00; resp[pos++] = 0x3C;   /* TTL 60 s              */
-    resp[pos++] = 0x00; resp[pos++] = 0x04;   /* RDLENGTH              */
+    resp[pos++] = 0x00; resp[pos++] = 0x3C;
+    resp[pos++] = 0x00; resp[pos++] = 0x04;
     memcpy(resp + pos, &gw, 4); pos += 4;
 
     sendto(sock, resp, pos, 0,
@@ -255,7 +172,6 @@ static void dns_task(void *arg)
         int n = recvfrom(s_dns_sock, buf, sizeof(buf), 0,
                          (struct sockaddr *)&client, &clen);
         if (n > 0) dns_reply(s_dns_sock, &client, buf, n);
-        /* SO_RCVTIMEO = 1 s — loops here to check s_dns_run */
     }
     vTaskDelete(NULL);
 }
@@ -280,7 +196,7 @@ static void start_dns(void)
         close(s_dns_sock); s_dns_sock = -1; return;
     }
     s_dns_run = true;
-    xTaskCreate(dns_task, "portal_dns", 2048, NULL, 5, NULL);
+    xTaskCreate(dns_task, "portal_dns", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "DNS hijack → " AP_GW_IP);
 }
 
@@ -288,13 +204,16 @@ static void stop_dns(void)
 {
     s_dns_run = false;
     if (s_dns_sock >= 0) { close(s_dns_sock); s_dns_sock = -1; }
-    vTaskDelay(pdMS_TO_TICKS(150));   /* let dns_task wake from SO_RCVTIMEO and exit */
+    vTaskDelay(pdMS_TO_TICKS(150));
 }
 
-/* ── httpd handlers ─────────────────────────────────────────────────────────*/
+/* ── httpd handlers ────────────────────────────────────────────────────────*/
 
 static esp_err_t handle_root(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/setup.html", "text/html"); }
+
+static esp_err_t handle_base_css(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/base.css", "text/css"); }
 
 static esp_err_t handle_setup_css(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/setup.css", "text/css"); }
@@ -304,8 +223,6 @@ static esp_err_t handle_setup_js(httpd_req_t *req)
 
 static esp_err_t handle_probe_apple(httpd_req_t *req)
 {
-    /* iOS/macOS expects <TITLE>Success</TITLE> to consider the portal detected.
-     * The JS redirect ensures the browser then opens the setup page. */
     static const char BODY[] =
         "<HTML><HEAD><TITLE>Success</TITLE></HEAD>"
         "<BODY><script>window.location.replace('http://" AP_GW_IP "/');</script>"
@@ -339,8 +256,6 @@ static esp_err_t handle_probe_android(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Catch-all: redirect any unrecognised URI to the setup page.
- * Registered as wildcard requires httpd_uri_match_wildcard in httpd config. */
 static esp_err_t handle_redirect(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -349,7 +264,7 @@ static esp_err_t handle_redirect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/scan — returns cached AP list; never blocks the httpd task */
+/* GET /api/scan — returns cached AP list immediately */
 static esp_err_t handle_scan(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -363,9 +278,6 @@ static esp_err_t handle_scan(httpd_req_t *req)
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
     httpd_resp_sendstr_chunk(req, "[");
     for (int i = 0; i < s_scan_count; i++) {
-        /* Worst-case entry: 1(,)+1({)+9("ssid":")+64(ssid)+1(")+
-         *   12(,"quality":)+3(100)+12(,"secure":)+5(false)+1(}) = 109 bytes.
-         * 128 bytes is comfortable. */
         char entry[128];
         snprintf(entry, sizeof(entry),
                  "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
@@ -381,7 +293,14 @@ static esp_err_t handle_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── URL decode ─────────────────────────────────────────────────────────────*/
+/* GET /api/rescan — blocking refresh, returns fresh JSON */
+static esp_err_t handle_rescan(httpd_req_t *req)
+{
+    run_scan_once();   /* blocks httpd task ~3 s; acceptable for explicit action */
+    return handle_scan(req);
+}
+
+/* ── URL decode ────────────────────────────────────────────────────────────*/
 static void url_decode(const char *src, char *dst, int dst_size)
 {
     int out = 0;
@@ -411,10 +330,6 @@ static void extract_field(const char *body, const char *key,
     const char *end = strchr(p, '&');
     int len = end ? (int)(end - p) : (int)strlen(p);
 
-    /* Allocate a temp buffer for the raw (still URL-encoded) field value.
-     * URL encoding expands each byte to at most 3 chars, so the decoded
-     * result always fits in out_size. The temp buffer only needs to hold
-     * the raw encoded bytes, which is at most len+1. */
     char *tmp = malloc(len + 1);
     if (!tmp) { out[0] = '\0'; return; }
     memcpy(tmp, p, len);
@@ -450,25 +365,23 @@ static esp_err_t handle_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── httpd lifecycle ────────────────────────────────────────────────────────*/
+/* ── httpd lifecycle ───────────────────────────────────────────────────────*/
 static httpd_handle_t s_httpd = NULL;
 
 static void start_httpd(void)
 {
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 18;
     cfg.lru_purge_enable = true;
-    cfg.uri_match_fn     = httpd_uri_match_wildcard;  /* required for wildcard */
+    cfg.uri_match_fn     = httpd_uri_match_wildcard;
 
     if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed"); return;
     }
 
-    /* Routes are checked in registration order. Specific paths first,
-     * wildcard catch-all last. HEAD variants for Windows NCSI probes
-     * must be registered separately — httpd matches method exactly. */
     static const httpd_uri_t routes[] = {
         { .uri="/",                          .method=HTTP_GET,  .handler=handle_root              },
+        { .uri="/base.css",                  .method=HTTP_GET,  .handler=handle_base_css          },
         { .uri="/setup.css",                 .method=HTTP_GET,  .handler=handle_setup_css         },
         { .uri="/setup.js",                  .method=HTTP_GET,  .handler=handle_setup_js          },
         { .uri="/hotspot-detect.html",       .method=HTTP_GET,  .handler=handle_probe_apple       },
@@ -481,6 +394,7 @@ static void start_httpd(void)
         { .uri="/generate_204",              .method=HTTP_GET,  .handler=handle_probe_android     },
         { .uri="/gen_204",                   .method=HTTP_GET,  .handler=handle_probe_android     },
         { .uri="/api/scan",                  .method=HTTP_GET,  .handler=handle_scan              },
+        { .uri="/api/rescan",                .method=HTTP_GET,  .handler=handle_rescan            },
         { .uri="/api/connect",               .method=HTTP_POST, .handler=handle_connect           },
         { .uri="/*",                         .method=HTTP_GET,  .handler=handle_redirect          },
     };
@@ -490,28 +404,21 @@ static void start_httpd(void)
     ESP_LOGI(TAG, "Portal httpd started");
 }
 
-/* ── Public API ─────────────────────────────────────────────────────────────*/
+/* ── Public API ────────────────────────────────────────────────────────────*/
 
 void portal_start(const char *ap_ssid)
 {
     (void)ap_ssid;
 
-    s_event_group  = xEventGroupCreate();
-    s_scan_evt_grp = xEventGroupCreate();
+    s_event_group = xEventGroupCreate();
     if (!s_scan_mutex) s_scan_mutex = xSemaphoreCreateMutex();
 
-    /* Register for SCAN_DONE before starting the scan task so no event
-     * is missed if the first scan completes very quickly. */
-    esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
-                                scan_done_cb, NULL);
-
-    /* NEW: use shared mount helper instead of local fs_mount() */
     vfs_mount_littlefs();
     start_httpd();
     start_dns();
 
-    s_scan_run = true;
-    xTaskCreate(scan_task, "portal_scan", 4096, NULL, 3, NULL);
+    /* One blocking scan at startup — safe, no clients yet */
+    run_scan_once();
 
     ESP_LOGI(TAG, "Portal running at http://" AP_GW_IP "/");
     xEventGroupWaitBits(s_event_group, CREDS_RECEIVED_BIT,
@@ -521,14 +428,6 @@ void portal_start(const char *ap_ssid)
 
 void portal_stop(void)
 {
-    s_scan_run = false;
-
-    /* Unregister scan handler before deleting the event group it writes to.
-     * Order matters: unregister first so no in-flight SCAN_DONE event tries
-     * to set a bit on an already-deleted group. */
-    esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, scan_done_cb);
-    if (s_scan_evt_grp) { vEventGroupDelete(s_scan_evt_grp); s_scan_evt_grp = NULL; }
-
     stop_dns();
     if (s_httpd) { httpd_stop(s_httpd); s_httpd = NULL; }
     if (s_event_group) { vEventGroupDelete(s_event_group); s_event_group = NULL; }

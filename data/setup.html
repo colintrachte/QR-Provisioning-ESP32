@@ -15,13 +15,17 @@
 
     <p class="section-label">
       Available networks
-      <button class="rescan-btn" id="rescan-btn">&#8635; Rescan</button>
+      <button class="rescan-btn" id="btn-rescan">&#8635; Rescan</button>
     </p>
+
+    <!-- Spinner: shown while scanning -->
+    <p id="spinner" class="scan-status" style="display:none">Scanning&hellip;</p>
+
     <div id="network-list">
       <p class="scan-status">Scanning&hellip;</p>
     </div>
 
-    <form id="setup-form">
+    <form id="connect-form">
       <label for="ssid">Network name</label>
       <input type="text" id="ssid" name="ssid"
              placeholder="Or type manually"
@@ -29,15 +33,15 @@
              autocapitalize="none" spellcheck="false"
              required>
 
-      <label for="pass">Password</label>
+      <label for="password">Password</label>
       <div class="pass-wrap">
-        <input type="password" id="pass" name="pass"
+        <input type="password" id="password" name="password"
                placeholder="Leave blank if open network"
                autocomplete="current-password">
         <button type="button" class="toggle-pass" aria-label="Show/hide password">&#128065;</button>
       </div>
 
-      <button type="submit" id="submit-btn">Save &amp; Connect</button>
+      <button type="submit" id="btn-connect">Save &amp; Connect</button>
       <p class="status" id="status"></p>
     </form>
 

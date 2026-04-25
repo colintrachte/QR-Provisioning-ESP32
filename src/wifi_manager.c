@@ -1,21 +1,6 @@
 /**
  * wifi_manager.c — STA/AP WiFi state machine and NVS credential storage.
  *
- * Responsibilities (this file only):
- *   1. NVS: load, save, erase {ssid, password} in the "wifi_mgr" namespace.
- *   2. SoftAP: configure and start the access point interface.
- *   3. STA: connect, retry on failure, report state via callbacks.
- *   4. Manager task: owns the blocking provisioning flow so wifi_manager_start()
- *      returns immediately to the caller.
- *
- * What is NOT here (compare with old wifi_manager.c):
- *   DNS hijack task   → portal.c
- *   Captive portal HTTP handlers → portal.c
- *   Network scan task → portal.c
- *   Robot control HTTP + WebSocket → app_server.c
- *   Motor stubs → removed; see ctrl_drive.c
- *   mDNS → app_server.c (started after STA connects)
- *
  * Manager task flow
  * ─────────────────
  *   wifi_manager_start() spawns mgr_task and returns immediately.
@@ -26,7 +11,7 @@
  *                       → on success: fire STA_CONNECTED callback, done.
  *                       → on failure: fall through to portal.
  *
- *     [no creds / STA failed] → configure SoftAP → fire AP_STARTED
+ *     [no creds / STA failed] → tear down STA → configure SoftAP → fire AP_STARTED
  *                              → portal_start() [blocks until POST /api/connect]
  *                              → portal_stop()
  *                              → save credentials to NVS
@@ -35,13 +20,6 @@
  *                              → wait for EVT_STA_CONNECTED
  *                              → on success: fire STA_CONNECTED callback.
  *                              → on failure: fire STA_FAILED, restart portal.
- *
- * WiFi event handler
- * ──────────────────
- * The lwIP / WiFi event callbacks run on the system event task. They set
- * event group bits and push to the mgr_task via s_sta_evt_grp only.
- * Callbacks (on_state_change, on_connected) are always fired from mgr_task,
- * which runs at a known priority — safe to call display_* and o_led_* there.
  */
 
 #include "wifi_manager.h"
@@ -67,30 +45,21 @@
 
 static const char *TAG = "wifi_mgr";
 
-/* ── NVS ────────────────────────────────────────────────────────────────────*/
 #define NVS_NAMESPACE "wifi_mgr"
 #define NVS_KEY_SSID  "ssid"
 #define NVS_KEY_PASS  "pass"
 
-/* ── Event-group bits (internal, between event handler and mgr_task) ────────*/
 #define EVT_STA_CONNECTED BIT0
 #define EVT_STA_FAILED    BIT1
 
-/* ── STA connect timeout ────────────────────────────────────────────────────
- * How long mgr_task waits for EVT_STA_CONNECTED after calling esp_wifi_connect().
- * 10 s is enough for WPA2 handshake + DHCP on a responsive AP.
- */
 #define STA_CONNECT_TIMEOUT_MS 10000
 
-/* ── Module state ───────────────────────────────────────────────────────────*/
 static wifi_manager_config_t  s_cfg;
 static EventGroupHandle_t     s_sta_evt_grp = NULL;
 static bool                   s_connected   = false;
 static char                   s_ip[16]      = {0};
 static char                   s_sta_ssid[33] = {0};
 static volatile int           s_retry_count  = 0;
-
-/* ── NVS helpers ─────────────────────────────────────────────────────────────*/
 
 static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
@@ -120,10 +89,6 @@ static void nvs_save(const char *ssid, const char *pass)
     ESP_LOGI(TAG, "Credentials saved to NVS (SSID=%s)", ssid);
 }
 
-/* ── WiFi event handler ─────────────────────────────────────────────────────
- * Runs on the system event task. Only sets event group bits — does not call
- * any user callbacks or display functions (wrong task context for that).
- */
 static void wifi_event_cb(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
 {
@@ -160,8 +125,6 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
     }
 }
 
-/* ── SoftAP configuration ───────────────────────────────────────────────────*/
-
 static void ap_configure(void)
 {
     wifi_config_t ap_cfg = {0};
@@ -184,14 +147,8 @@ static void ap_configure(void)
              s_cfg.ap_ssid, ap_cfg.ap.channel);
 }
 
-/* ── STA connection attempt ─────────────────────────────────────────────────
- * Configures STA interface and calls esp_wifi_connect().
- * Returns true if EVT_STA_CONNECTED arrives within STA_CONNECT_TIMEOUT_MS.
- * Returns false on timeout or EVT_STA_FAILED (retry limit hit).
- */
 static bool sta_connect(const char *ssid, const char *pass)
 {
-    /* Clear stale event bits before each attempt */
     xEventGroupClearBits(s_sta_evt_grp, EVT_STA_CONNECTED | EVT_STA_FAILED);
     s_retry_count = 0;
 
@@ -200,7 +157,6 @@ static bool sta_connect(const char *ssid, const char *pass)
             sizeof(sta_cfg.sta.ssid) - 1);
     strncpy((char *)sta_cfg.sta.password, pass,
             sizeof(sta_cfg.sta.password) - 1);
-    /* pmf_cfg: prefer PMF, accept non-PMF APs */
     sta_cfg.sta.pmf_cfg.capable  = true;
     sta_cfg.sta.pmf_cfg.required = false;
 
@@ -210,8 +166,7 @@ static bool sta_connect(const char *ssid, const char *pass)
     EventBits_t bits = xEventGroupWaitBits(
         s_sta_evt_grp,
         EVT_STA_CONNECTED | EVT_STA_FAILED,
-        pdTRUE,   /* clear on exit */
-        pdFALSE,  /* either bit */
+        pdTRUE, pdFALSE,
         pdMS_TO_TICKS(STA_CONNECT_TIMEOUT_MS));
 
     if (bits & EVT_STA_CONNECTED) {
@@ -219,12 +174,9 @@ static bool sta_connect(const char *ssid, const char *pass)
         return true;
     }
 
-    /* Timeout or failure — ensure STA is disconnected before caller retries */
     esp_wifi_disconnect();
     return false;
 }
-
-/* ── Callback helpers ───────────────────────────────────────────────────────*/
 
 static void fire_state(wifi_manager_state_t state)
 {
@@ -239,10 +191,15 @@ static void fire_connected(void)
         s_cfg.on_connected(s_sta_ssid, s_ip, s_cfg.cb_ctx);
 }
 
-/* ── Manager task ───────────────────────────────────────────────────────────
- * Owns the blocking provisioning flow. Stack is generous because portal_start()
- * and the callbacks it fires (prov_ui, display) can be stack-hungry.
- */
+static void reset_wifi_for_ap(void)
+{
+    ESP_LOGI(TAG, "Resetting WiFi for AP mode");
+    esp_wifi_disconnect();
+    esp_wifi_set_mode(WIFI_MODE_NULL);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+}
+
 static void mgr_task(void *arg)
 {
     (void)arg;
@@ -250,7 +207,7 @@ static void mgr_task(void *arg)
     char ssid[33] = {0};
     char pass[65] = {0};
 
-    /* ── Try stored credentials ─────────────────────────────────────────────*/
+    /* ── Try stored credentials ────────────────────────────────────────────*/
     if (nvs_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
         fire_state(WIFI_MANAGER_STATE_CONNECTING_SAVED);
 
@@ -270,34 +227,26 @@ static void mgr_task(void *arg)
             return;
         }
 
-        /* Saved credentials failed — clear them so portal gets a clean run */
         ESP_LOGW(TAG, "Saved credentials failed — falling back to portal");
     }
 
-    /* ── Portal loop: repeat until STA connects ─────────────────────────────
-     * This handles both the "no credentials" first-boot case and the
-     * "wrong password submitted via portal" retry case.
-     */
+    /* ── Portal loop: repeat until STA connects ────────────────────────────*/
+    reset_wifi_for_ap();
     ap_configure();
     fire_state(WIFI_MANAGER_STATE_AP_STARTED);
 
     while (1) {
-        /* portal_start() blocks until the user POSTs credentials */
         portal_start(s_cfg.ap_ssid);
 
-        /* Credentials received — tear down portal before STA attempt */
         portal_stop();
         portal_get_credentials(ssid, pass);
         fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
 
-        /* Brief delay: give the phone's STA interface a moment to see the
-         * AP disappear (avoids duplicate-IP confusion on some Android builds) */
         vTaskDelay(pdMS_TO_TICKS(300));
 
         fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
 
         if (sta_connect(ssid, pass)) {
-            /* Save only after a successful connection */
             nvs_save(ssid, pass);
 
             fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
@@ -315,24 +264,22 @@ static void mgr_task(void *arg)
             return;
         }
 
-        /* Wrong password or AP unreachable — restart the portal */
         fire_state(WIFI_MANAGER_STATE_STA_FAILED);
         ESP_LOGW(TAG, "STA connection failed — restarting portal");
 
-        /* Re-configure AP (esp_wifi_connect() may have changed mode) */
+        reset_wifi_for_ap();
         ap_configure();
         fire_state(WIFI_MANAGER_STATE_AP_STARTED);
     }
 }
 
-/* ── Public API ─────────────────────────────────────────────────────────────*/
+/* ── Public API ────────────────────────────────────────────────────────────*/
 
 esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 {
     if (!config || !config->ap_ssid) return ESP_ERR_INVALID_ARG;
     memcpy(&s_cfg, config, sizeof(s_cfg));
 
-    /* NVS: initialise partition, erase if corrupt */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
         err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -345,9 +292,6 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         return err;
     }
 
-    /* Network stack: both calls return ESP_ERR_INVALID_STATE if already
-     * initialised (e.g. after a soft reset via wifi_manager_reset).
-     * Treat that as success so a second call doesn't abort. */
     esp_err_t ni_err = esp_netif_init();
     if (ni_err != ESP_OK && ni_err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_init: %s", esp_err_to_name(ni_err));
@@ -358,7 +302,6 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         ESP_LOGE(TAG, "esp_event_loop_create_default: %s", esp_err_to_name(el_err));
         return el_err;
     }
-    /* Default netif objects must be created only once — they survive resets */
     static bool s_netif_created = false;
     if (!s_netif_created) {
         esp_netif_create_default_wifi_ap();
@@ -372,8 +315,6 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         ESP_LOGE(TAG, "esp_wifi_init: %s", esp_err_to_name(wifi_err));
         return wifi_err;
     }
-    /* APSTA: AP stays up during STA connection attempts so the phone's browser
-     * can still reach the portal page during the connecting screen. */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
 
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
@@ -386,7 +327,6 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
     s_sta_evt_grp = xEventGroupCreate();
     if (!s_sta_evt_grp) return ESP_ERR_NO_MEM;
 
-    /* Spawn manager task — provisioning flow runs there, not here */
     BaseType_t ok = xTaskCreate(mgr_task, "wifi_mgr", 6144, NULL, 4, NULL);
     if (ok != pdPASS) return ESP_ERR_NO_MEM;
 
@@ -410,9 +350,7 @@ esp_err_t wifi_manager_erase_credentials(void)
 
 esp_err_t wifi_manager_reset(void)
 {
-    /* Erase credentials — next boot will go straight to portal. */
     wifi_manager_erase_credentials();
-    /* mgr_task is still running; a full restart is the cleanest recovery. */
     ESP_LOGW(TAG, "wifi_manager_reset — restarting");
     esp_restart();
     return ESP_OK;

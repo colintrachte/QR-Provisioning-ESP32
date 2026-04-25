@@ -1,168 +1,189 @@
-'use strict';
-
-/* =============================================================================
- * setup.js — WiFi provisioning portal client.
+/**
+ * setup.js — Captive portal WiFi setup page.
  *
- * Flow:
- *  1. Page load  → startScan() polls GET /scan until the ESP32 returns a
- *                  JSON array of nearby APs.
- *  2. User picks (or types) a network and enters a password.
- *  3. Submit     → POST /save with ssid= & pass= form-encoded body.
- *  4. ESP32 saves to NVS and reboots; AP disappears → success message shown.
- *
- * Skip link: navigates directly to http://<host>/ so the developer can reach
- * the robot control page without completing WiFi setup (e.g. when already
- * connected via a different route, or for local testing).
- * ============================================================================= */
+ * API:
+ *   GET  /api/scan    → cached AP list JSON (immediate)
+ *   GET  /api/rescan  → blocking scan, then JSON (~3 s)
+ *   POST /api/connect → body: ssid=<enc>&password=<enc>
+ */
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function escHtml(s)
-{
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const API_SCAN    = '/api/scan';
+const API_RESCAN  = '/api/rescan';
+const API_CONNECT = '/api/connect';
+
+let g_networks = [];
+let g_selected = null;
+
+/* ── DOM refs ──────────────────────────────────────────────────────────────*/
+const elList      = document.getElementById('network-list');
+const elSpinner   = document.getElementById('spinner');
+const elRescan    = document.getElementById('btn-rescan');
+const elConnect   = document.getElementById('btn-connect');
+const elSsid      = document.getElementById('ssid');
+const elPass      = document.getElementById('password');
+const elForm      = document.getElementById('connect-form');
+const elStatus    = document.getElementById('status');
+const elToggle    = document.querySelector('.toggle-pass');
+const elSkip      = document.getElementById('skip-btn');
+
+/* ── Init ──────────────────────────────────────────────────────────────────*/
+async function init() {
+    elRescan.addEventListener('click', onRescan);
+    elForm.addEventListener('submit', e => { e.preventDefault(); onConnect(); });
+
+    /* Password visibility toggle */
+    if (elToggle) {
+        elToggle.addEventListener('click', () => {
+            const isPass = elPass.type === 'password';
+            elPass.type  = isPass ? 'text' : 'password';
+            elToggle.textContent = isPass ? '\u{1F648}' : '\u{1F441}';
+        });
+    }
+
+    /* Skip button — navigate to robot index once connected */
+    if (elSkip) {
+        elSkip.addEventListener('click', e => {
+            e.preventDefault();
+            window.location.href = 'http://' + window.location.hostname + '/';
+        });
+    }
+
+    showSpinner(true);
+    await loadNetworks();
+    showSpinner(false);
 }
 
-// Returns a 4-char signal-strength glyph string from a 0-100 quality value.
-function signalBars(quality)
-{
-    if (quality > 80) return '\u2582\u2584\u2586\u2588';
-    if (quality > 60) return '\u2582\u2584\u2586\xb7';
-    if (quality > 40) return '\u2582\u2584\xb7\xb7';
-    return '\u2582\xb7\xb7\xb7';
+/* ── Load cached networks ──────────────────────────────────────────────────*/
+async function loadNetworks() {
+    try {
+        const res  = await fetch(API_SCAN);
+        const data = await res.json();
+
+        if (data.status === 'scanning') {
+            setStatus('Scanning\u2026 please wait');
+            setTimeout(loadNetworks, 600);
+            return;
+        }
+
+        g_networks = data;
+        renderList();
+        setStatus(data.length ? `${data.length} network(s) found` : 'No networks found');
+    } catch (err) {
+        setStatus('Failed to load networks');
+        console.error(err);
+    }
 }
 
-// ── Network list ──────────────────────────────────────────────────────────────
-const listEl    = document.getElementById('network-list');
-const ssidInput = document.getElementById('ssid');
-const passInput = document.getElementById('pass');
+/* ── Manual rescan ─────────────────────────────────────────────────────────*/
+async function onRescan() {
+    elRescan.disabled = true;
+    showSpinner(true);
+    setStatus('Scanning\u2026 stay on this page');
 
-function renderNetworks(networks)
-{
-    listEl.innerHTML = '';
+    try {
+        const res  = await fetch(API_RESCAN);
+        const data = await res.json();
+        g_networks = data;
+        renderList();
+        setStatus(data.length ? `${data.length} network(s) found` : 'No networks found');
+    } catch (err) {
+        setStatus('Rescan failed');
+        console.error(err);
+    } finally {
+        showSpinner(false);
+        elRescan.disabled = false;
+    }
+}
 
-    if (!networks || networks.length === 0)
-    {
-        listEl.innerHTML =
-            '<p class="scan-status">No networks found. ' +
-            '<button class="rescan-btn" id="rescan-empty">Rescan</button></p>';
-        document.getElementById('rescan-empty').addEventListener('click', startScan);
+/* ── Render list ───────────────────────────────────────────────────────────*/
+function renderList() {
+    elList.innerHTML = '';
+    if (!g_networks.length) {
+        elList.innerHTML = '<p class="scan-status">No networks found</p>';
         return;
     }
 
-    networks.sort((a, b) => b.quality - a.quality);
-
-    networks.forEach(net =>
-    {
+    g_networks.forEach((ap, idx) => {
         const btn = document.createElement('button');
         btn.type      = 'button';
-        btn.className = 'network-btn';
+        btn.className = 'network-btn' + (g_selected === idx ? ' selected' : '');
+
+        const lock  = ap.secure ? '\uD83D\uDD12 ' : '\uD83D\uDD13 ';
+        const bars  = qualityBars(ap.quality);
+
         btn.innerHTML =
-            '<span class="network-name">' + escHtml(net.ssid) + '</span>' +
-            '<span class="network-meta">' +
-                '<span class="signal">' + signalBars(net.quality) + ' ' + net.quality + '%</span>' +
-                (net.secure ? '<span>&#128274;</span>' : '') +
-            '</span>';
+            `<span class="network-name">${escapeHtml(ap.ssid)}</span>` +
+            `<span class="signal">${lock}${bars}</span>`;
 
-        btn.addEventListener('click', () =>
-        {
-            listEl.querySelectorAll('.network-btn').forEach(b => b.classList.remove('selected'));
-            btn.classList.add('selected');
-            ssidInput.value = net.ssid;
-            if (net.secure) passInput.focus();
-            else passInput.value = '';
-        });
-
-        listEl.appendChild(btn);
+        btn.addEventListener('click', () => selectNetwork(idx));
+        elList.appendChild(btn);
     });
 }
 
-// ── Scan polling ──────────────────────────────────────────────────────────────
-// Polls GET /scan until the server returns a JSON array (not {"status":"scanning"}).
-// Back-off: 1.5 s while scanning, 3 s on network error.
-
-let scanTimer = null;
-
-function pollScan()
-{
-    fetch('/scan')
-        .then(r => r.ok ? r.json() : Promise.reject(r.status))
-        .then(data =>
-        {
-            if (Array.isArray(data)) renderNetworks(data);
-            else scanTimer = setTimeout(pollScan, 1500);
-        })
-        .catch(() => { scanTimer = setTimeout(pollScan, 3000); });
+function selectNetwork(idx) {
+    g_selected    = idx;
+    elSsid.value  = g_networks[idx].ssid;
+    elPass.value  = '';
+    elPass.focus();
+    renderList();
 }
 
-function startScan()
-{
-    listEl.innerHTML = '<p class="scan-status">Scanning&hellip;</p>';
-    clearTimeout(scanTimer);
-    pollScan();
+/* ── Connect ───────────────────────────────────────────────────────────────*/
+async function onConnect() {
+    const ssid = elSsid.value.trim();
+    const pass = elPass.value;
+
+    if (!ssid) {
+        setStatus('Please select or enter an SSID');
+        return;
+    }
+
+    elConnect.disabled = true;
+    setStatus('Saving\u2026');
+
+    const body = `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(pass)}`;
+    try {
+        const res  = await fetch(API_CONNECT, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body,
+        });
+        const text = await res.text();
+        setStatus(text);
+        /* Device reboots; user will reconnect to their home WiFi */
+    } catch (err) {
+        /* Fetch may throw when the device reboots mid-response — treat as success */
+        setStatus('Saved \u2014 device is connecting\u2026');
+        console.info('Expected fetch abort on reboot:', err);
+    } finally {
+        elConnect.disabled = false;
+    }
 }
 
-document.getElementById('rescan-btn').addEventListener('click', startScan);
-
-// ── Password visibility toggle ────────────────────────────────────────────────
-document.querySelector('.toggle-pass').addEventListener('click', () =>
-{
-    passInput.type = passInput.type === 'password' ? 'text' : 'password';
-});
-
-// ── Save / submit ─────────────────────────────────────────────────────────────
-// On success the ESP32 reboots and the AP disappears, so fetch() will either
-// resolve with HTTP 200 (fast path) or reject with a network error (reboot
-// happened first). Both outcomes mean saved — show success in both branches.
-
-const statusEl  = document.getElementById('status');
-const submitBtn = document.getElementById('submit-btn');
-
-document.getElementById('setup-form').addEventListener('submit', e =>
-{
-    e.preventDefault();
-    const ssid = ssidInput.value.trim();
-    if (!ssid) return;
-
-    submitBtn.disabled    = true;
-    submitBtn.textContent = 'Saving...';
-    statusEl.textContent  = 'Sending credentials\u2026';
-    statusEl.className    = 'status';
-
-    const body = 'ssid=' + encodeURIComponent(ssid) +
-                 '&pass=' + encodeURIComponent(passInput.value);
-
-    fetch('/save', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-    })
-    .then(r => { if (r.ok) showSaveSuccess(); else showSaveError('Server returned ' + r.status); })
-    .catch(() => showSaveSuccess());  /* network gone = device rebooted = success */
-});
-
-function showSaveSuccess()
-{
-    statusEl.textContent = 'Saved! Device is joining your network\u2026';
-    statusEl.className   = 'status ok';
+/* ── Helpers ───────────────────────────────────────────────────────────────*/
+function showSpinner(show) {
+    if (elSpinner) elSpinner.style.display = show ? 'block' : 'none';
 }
 
-function showSaveError(msg)
-{
-    statusEl.textContent  = msg || 'Error saving credentials.';
-    statusEl.className    = 'status error';
-    submitBtn.disabled    = false;
-    submitBtn.textContent = 'Save & Connect';
+function setStatus(msg) {
+    if (elStatus) elStatus.textContent = msg;
 }
 
-// ── Skip / direct access ──────────────────────────────────────────────────────
-// Navigates to the robot control page without completing WiFi setup.
-// Useful when the device is already reachable on the network, or for local
-// testing where the developer is bypassing provisioning entirely.
-document.getElementById('skip-btn').addEventListener('click', e =>
-{
-    e.preventDefault();
-    window.location.href = 'http://' + location.hostname + '/';
-});
+function qualityBars(q) {
+    const filled = Math.round(q / 25);
+    let s = '';
+    for (let i = 0; i < 4; i++) s += (i < filled) ? '\u25AE' : '\u25AF';
+    return s;
+}
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-startScan();
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+/* ── Boot ──────────────────────────────────────────────────────────────────*/
+if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', init);
+else
+    init();

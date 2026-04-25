@@ -8,17 +8,6 @@
  * CONFIG_HTTPD_MAX_URI_LEN (512 B) and would overflow any fixed stack buffer
  * when prepending "/littlefs". A wildcard catch-all returns 404 for
  * any URI not in the route table. Requires uri_match_fn = wildcard.
- *
- * All files are opened "rb". Text mode would corrupt byte counts on any
- * platform that translates LF→CRLF, including some newlib configurations.
- *
- * WebSocket client tracking
- * ─────────────────────────
- * s_ws_fds[] is a fixed array of open socket fds, protected by s_ws_mutex.
- * app_server_push_telemetry() snapshots the live fd list under the mutex,
- * releases the mutex, then sends to each fd. httpd_ws_send_frame_async
- * posts to the httpd send queue and must NOT be called while holding a
- * mutex that httpd handlers could also need.
  */
 
 #include "app_server.h"
@@ -27,7 +16,7 @@
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
-#include "vfs_mount.h"   /* NEW: shared mount helper */
+#include "vfs_mount.h"
 #include "config.h"
 
 #include <string.h>
@@ -40,9 +29,7 @@
 
 static const char *TAG = "app_server";
 
-/* ── LittleFS ───────────────────────────────────────────────────────────────*/
 #define FS_BASE     "/littlefs"
-#define FS_PART     "storage"    /* must match partitions.csv label           */
 #define SERVE_CHUNK  1024
 
 static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *mime)
@@ -66,17 +53,18 @@ static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *mime
     return ESP_OK;
 }
 
-/* ── File route handlers ─────────────────────────────────────────────────────
- * One handler per known file. No URI→path construction.
- */
+/* ── File route handlers ───────────────────────────────────────────────────*/
 static esp_err_t handle_index(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/index.html", "text/html"); }
 
-static esp_err_t handle_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/style.css",  "text/css"); }
+static esp_err_t handle_base_css(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/base.css",   "text/css"); }
 
-static esp_err_t handle_js(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/script.js",  "application/javascript"); }
+static esp_err_t handle_index_css(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/index.css",  "text/css"); }
+
+static esp_err_t handle_index_js(httpd_req_t *req)
+    { return serve_file(req, FS_BASE "/index.js",   "application/javascript"); }
 
 static esp_err_t handle_settings(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/settings.html", "text/html"); }
@@ -100,36 +88,22 @@ static esp_err_t handle_404(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── Settings API endpoints ─────────────────────────────────────────────────
- *
- * GET  /api/status      — JSON: current WiFi state (ssid, ip, rssi, connected)
- * GET  /api/scan        — JSON: cached AP list, or {"status":"scanning"}.
- *                         ?refresh=1 triggers a fresh scan before returning.
- * POST /api/connect     — body: ssid=&pass=  → save to NVS and reboot
- * POST /api/erase       — erase credentials and reboot into provisioning
- *
- * Scan results are cached from the last esp_wifi_scan. In STA mode a scan
- * causes a brief (~100 ms) disconnection on some APs — acceptable for a
- * settings page triggered by user action. The cached result is served
- * immediately; a background task rebuilds it when ?refresh=1 is passed. */
-
+/* ── Settings API endpoints ────────────────────────────────────────────────*/
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
-/* NVS namespace/keys must match wifi_manager.c */
 #define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
 #define SETTINGS_NVS_KEY_SSID   "ssid"
 #define SETTINGS_NVS_KEY_PASS   "pass"
 
-/* ── Scan cache ─────────────────────────────────────────────────────────────*/
 #define MAX_SCAN_APS  20
 
 typedef struct {
     char ssid[33];
     int  rssi;
-    int  quality;      /* 0-100 */
+    int  quality;
     bool secure;
 } scan_ap_t;
 
@@ -154,7 +128,6 @@ static void scan_task(void *arg)
             s_scan_count = 0;
             for (int i = 0; i < (int)count && s_scan_count < MAX_SCAN_APS; i++) {
                 if (recs[i].ssid[0] == '\0') continue;
-                /* JSON-escape backslash and quote in SSID */
                 int si = 0;
                 for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
                     char c = (char)recs[i].ssid[j];
@@ -218,7 +191,6 @@ static esp_err_t handle_api_status(httpd_req_t *req)
 /* GET /api/scan  — ?refresh=1 triggers a new scan */
 static esp_err_t handle_api_scan(httpd_req_t *req)
 {
-    /* Check for ?refresh=1 */
     char query[16] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
         strstr(query, "refresh=1"))
@@ -255,7 +227,7 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/connect — body: ssid=<url-encoded>&pass=<url-encoded> */
+/* POST /api/connect */
 static void url_decode(const char *src, char *dst, int dst_size)
 {
     int out = 0;
@@ -276,7 +248,6 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     int n = httpd_req_recv(req, body, sizeof(body) - 1);
     if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty"); return ESP_OK; }
 
-    /* Extract and decode ssid= and pass= fields */
     char ssid_enc[128] = {0}, pass_enc[128] = {0};
     char ssid[64] = {0}, pass[64] = {0};
 
@@ -300,7 +271,6 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
 
     if (!ssid[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required"); return ESP_OK; }
 
-    /* Write to NVS — same namespace/keys as wifi_manager uses */
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
@@ -321,7 +291,7 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* POST /api/erase — erase credentials and reboot into provisioning */
+/* POST /api/erase */
 static esp_err_t handle_api_erase(httpd_req_t *req)
 {
     nvs_handle_t nvs;
@@ -337,7 +307,7 @@ static esp_err_t handle_api_erase(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── WebSocket client tracking ──────────────────────────────────────────────*/
+/* ── WebSocket client tracking ─────────────────────────────────────────────*/
 #define MAX_WS_CLIENTS 4
 
 static httpd_handle_t    s_httpd    = NULL;
@@ -370,13 +340,9 @@ static void ws_client_remove(int fd)
     ESP_LOGI(TAG, "WS client fd=%d disconnected (total=%d)", fd, count);
 }
 
-/* ── WebSocket message dispatch ─────────────────────────────────────────────*/
-
+/* ── WebSocket message dispatch ────────────────────────────────────────────*/
 static void dispatch(httpd_req_t *req, const char *msg)
 {
-    /* Every recognised message resets the command watchdog, including ping.
-     * This keeps the robot alive as long as the browser tab is open and
-     * reachable — even if the user isn't actively driving. */
     if (strcmp(msg, "ping") == 0) {
         ctrl_drive_feed_watchdog();
         httpd_ws_frame_t pong = {
@@ -418,26 +384,21 @@ static void dispatch(httpd_req_t *req, const char *msg)
     ESP_LOGD(TAG, "Unknown WS msg: %s", msg);
 }
 
-/* ── WebSocket handler ──────────────────────────────────────────────────────*/
-
+/* ── WebSocket handler ─────────────────────────────────────────────────────*/
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
 
     if (req->method == HTTP_GET) {
-        /* Upgrade handshake — new connection */
         ws_client_add(fd);
         return ESP_OK;
     }
 
     httpd_ws_frame_t frame = {0};
-
-    /* First call with len=0 populates frame.type and frame.len */
     esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
     if (err != ESP_OK) { ws_client_remove(fd); return err; }
 
     if (frame.type == HTTPD_WS_TYPE_CLOSE) {
-        /* Echo close frame per RFC 6455 §5.5.1 */
         httpd_ws_frame_t close_frame = { .type = HTTPD_WS_TYPE_CLOSE };
         httpd_ws_send_frame(req, &close_frame);
         ws_client_remove(fd);
@@ -460,7 +421,7 @@ static esp_err_t ws_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── Public API ─────────────────────────────────────────────────────────────*/
+/* ── Public API ────────────────────────────────────────────────────────────*/
 
 esp_err_t app_server_start(void)
 {
@@ -468,13 +429,12 @@ esp_err_t app_server_start(void)
     s_scan_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
 
-    /* NEW: use shared mount helper instead of local fs_mount() */
     vfs_mount_littlefs();
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;   /* app + settings + API + OTA endpoints */
+    cfg.max_uri_handlers = 20;
     cfg.lru_purge_enable = true;
-    cfg.uri_match_fn     = httpd_uri_match_wildcard;  /* required for wildcard */
+    cfg.uri_match_fn     = httpd_uri_match_wildcard;
 
     esp_err_t err = httpd_start(&s_httpd, &cfg);
     if (err != ESP_OK) {
@@ -483,36 +443,26 @@ esp_err_t app_server_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        /* Static files */
         { .uri="/",              .method=HTTP_GET,  .handler=handle_index       },
-        { .uri="/style.css",     .method=HTTP_GET,  .handler=handle_css         },
-        { .uri="/script.js",     .method=HTTP_GET,  .handler=handle_js          },
+        { .uri="/base.css",      .method=HTTP_GET,  .handler=handle_base_css    },
+        { .uri="/index.css",     .method=HTTP_GET,  .handler=handle_index_css   },
+        { .uri="/index.js",      .method=HTTP_GET,  .handler=handle_index_js    },
         { .uri="/settings",      .method=HTTP_GET,  .handler=handle_settings    },
         { .uri="/settings.css",  .method=HTTP_GET,  .handler=handle_settings_css},
         { .uri="/settings.js",   .method=HTTP_GET,  .handler=handle_settings_js },
         { .uri="/favicon.ico",   .method=HTTP_GET,  .handler=handle_favicon     },
-        /* Settings API */
         { .uri="/api/status",    .method=HTTP_GET,  .handler=handle_api_status  },
         { .uri="/api/scan",      .method=HTTP_GET,  .handler=handle_api_scan    },
         { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect },
         { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase   },
-        /* WebSocket */
         { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
           .is_websocket=true                                                     },
-        /* Catch-all */
         { .uri="/*",             .method=HTTP_GET,  .handler=handle_404         },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
 
-    /* OTA update endpoints: POST /ota/firmware and POST /ota/filesystem.
-     * Registered after app routes so the wildcard 404 handler doesn't
-     * shadow them — OTA routes are POST, the wildcard only matches GET. */
     ota_server_register(s_httpd);
-
-    /* Mark running firmware as valid — cancels any pending rollback.
-     * Reaching this point means WiFi connected and the HTTP server started
-     * successfully, which is a reasonable "healthy" signal. */
     ota_server_mark_valid();
 
     ESP_LOGI(TAG, "App server started (port 80)");
@@ -533,9 +483,6 @@ void app_server_push_telemetry(void)
     const char *json = health_monitor_get_telemetry_json();
     size_t      jlen = strlen(json);
 
-    /* Snapshot fd list under lock, then release before sending.
-     * httpd_ws_send_frame_async posts to the httpd send queue and must not
-     * be called while holding a mutex that httpd task handlers also acquire. */
     int live[MAX_WS_CLIENTS];
     int nlive = 0;
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
@@ -551,7 +498,6 @@ void app_server_push_telemetry(void)
     for (int i = 0; i < nlive; i++) {
         esp_err_t err = httpd_ws_send_frame_async(s_httpd, live[i], &frame);
         if (err != ESP_OK) {
-            /* Prune the dead fd */
             int count = 0;
             xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
             for (int j = 0; j < MAX_WS_CLIENTS; j++) {
