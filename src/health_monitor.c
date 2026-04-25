@@ -31,7 +31,7 @@ static char    s_json[HEALTH_JSON_BUF_LEN];
 /**
  * Lists all files in the LittleFS 'storage' partition.
  * The path "/storage" matches the label in your partitions_8mb.csv.
- */
+
 void list_storage_contents(void)
 {
     const char *base_path = "/storage";
@@ -61,7 +61,7 @@ void list_storage_contents(void)
 
     closedir(dir);
 }
-
+ */
 /* ── RSSI ───────────────────────────────────────────────────────────────────*/
 
 static void check_rssi(void)

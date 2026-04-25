@@ -27,6 +27,7 @@
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
+#include "vfs_mount.h"   /* NEW: shared mount helper */
 #include "config.h"
 
 #include <string.h>
@@ -34,7 +35,6 @@
 #include <stdlib.h>
 #include "esp_log.h"
 #include "esp_http_server.h"
-#include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -44,21 +44,6 @@ static const char *TAG = "app_server";
 #define FS_BASE     "/littlefs"
 #define FS_PART     "storage"    /* must match partitions.csv label           */
 #define SERVE_CHUNK  1024
-
-static void fs_mount(void)
-{
-    static bool s_mounted = false;
-    if (s_mounted) return;
-    esp_vfs_littlefs_conf_t cfg = {
-        .base_path              = FS_BASE,
-        .partition_label        = FS_PART,
-        .format_if_mount_failed = true,
-    };
-    if (esp_vfs_littlefs_register(&cfg) == ESP_OK)
-        s_mounted = true;
-    else
-        ESP_LOGE(TAG, "LittleFS mount failed (run: pio run -t uploadfs)");
-}
 
 static esp_err_t serve_file(httpd_req_t *req, const char *path, const char *mime)
 {
@@ -483,7 +468,8 @@ esp_err_t app_server_start(void)
     s_scan_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
 
-    fs_mount();
+    /* NEW: use shared mount helper instead of local fs_mount() */
+    vfs_mount_littlefs();
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 20;   /* app + settings + API + OTA endpoints */

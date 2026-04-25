@@ -36,6 +36,7 @@
 
 #include "portal.h"
 #include "config.h"
+#include "vfs_mount.h"   /* NEW: shared mount helper */
 
 #include <string.h>
 #include <stdio.h>
@@ -48,7 +49,6 @@
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
-#include "esp_littlefs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -62,24 +62,6 @@ static const char *TAG = "portal";
 #define FS_BASE  "/littlefs"
 #define FS_PART  "storage"
 #define SERVE_CHUNK 1024
-
-static void fs_mount(void)
-{
-    static bool s_mounted = false;
-    if (s_mounted) return;
-    esp_vfs_littlefs_conf_t cfg = {
-        .base_path              = FS_BASE,
-        .partition_label        = FS_PART,
-        .format_if_mount_failed = true,   /* don't silently fail on blank flash */
-    };
-    if (esp_vfs_littlefs_register(&cfg) == ESP_OK)
-    {
-        s_mounted = true;
-        ESP_LOGE(TAG, "LittleFS mount succeeded");
-    }
-    else
-        ESP_LOGE(TAG, "LittleFS mount failed (run: pio run -t uploadfs)");
-}
 
 /* ── File serving helper ────────────────────────────────────────────────────
  * "rb" mode: LittleFS stores files with LF endings; text mode would corrupt
@@ -523,7 +505,8 @@ void portal_start(const char *ap_ssid)
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
                                 scan_done_cb, NULL);
 
-    fs_mount();
+    /* NEW: use shared mount helper instead of local fs_mount() */
+    vfs_mount_littlefs();
     start_httpd();
     start_dns();
 

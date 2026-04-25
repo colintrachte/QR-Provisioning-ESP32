@@ -1,53 +1,18 @@
-#
-# sdkconfig.defaults — applied before sdkconfig on every clean build.
-# Values here override esp-idf component Kconfig defaults.
-# Do NOT edit the generated sdkconfig directly — it is overwritten on rebuild.
-#
-# ── Flash & Memory ─────────────────────────────────────────────────────────────
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
-CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-
-# you may need to dig into menuconfig to tell it there is no PSRAM
-
-# ── Partition table ────────────────────────────────────────────────────────────
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_8mb.csv"
-CONFIG_PARTITION_TABLE_OFFSET=0x8000
-
-# ── LittleFS ───────────────────────────────────────────────────────────────────
-CONFIG_LITTLEFS_MAX_PARTITIONS=3
-CONFIG_LITTLEFS_PAGE_SIZE=256
-CONFIG_LITTLEFS_OBJ_NAME_LEN=64
-CONFIG_LITTLEFS_READ_SIZE=128
-CONFIG_LITTLEFS_WRITE_SIZE=128
-CONFIG_LITTLEFS_LOOKAHEAD_SIZE=64
-CONFIG_LITTLEFS_CACHE_SIZE=512
-CONFIG_LITTLEFS_BLOCK_CYCLES=512
-CONFIG_LITTLEFS_USE_MTIME=n
-
-# ── Networking (HTTP + mDNS) ───────────────────────────────────────────────────
+#common settings for all hardware
+# ── Networking ───────────────────────────────────────────
 CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_OTA_ALLOW_HTTP=y
-
-# Required for mDNS to function correctly
 CONFIG_LWIP_MULTICAST=y
 CONFIG_LWIP_IGMP=y
 
-# mDNS tuning
+# mDNS
 CONFIG_MDNS_MAX_SERVICES=10
 CONFIG_MDNS_TASK_PRIORITY=1
 CONFIG_MDNS_TASK_STACK_SIZE=4096
 
-# ── FreeRTOS (responsiveness tuning) ───────────────────────────────────────────
+# ── FreeRTOS ─────────────────────────────────────────────
 CONFIG_FREERTOS_HZ=1000
 
-# ── Wi-Fi (optional stability improvement) ─────────────────────────────────────
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
-
-# ── Serial & Bootloader ────────────────────────────────────────────────────────
-CONFIG_ESPTOOLPY_BAUD_921600B=y
-CONFIG_ESPTOOLPY_COMPRESSED=y
+# ── Serial ───────────────────────────────────────────────
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y

@@ -15,6 +15,7 @@
  *  9.  ctrl_drive_init()       Init motor driver hardware.
  *  10. health_monitor_init()   Cache peripheral map; baseline telemetry.
  *  11. app_server_start()      HTTP file server + WebSocket on port 80.
+ *                              (Actually started by wifi_manager once STA connects)
  *  12. Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
  *                              Spawns app_task once STA is connected.
  *
@@ -208,7 +209,8 @@ void app_main(void)
     /* 10. Health monitor. */
     health_monitor_init();
 
-    // 11. App server (HTTP file server + WebSocket) is managed by wifi manager's STA state machine;
+    /* 11. App server is started by wifi_manager once STA connects;
+     *     see mgr_task in wifi_manager.c. */
 
     o_led_blink(LED_PATTERN_HEARTBEAT);  /* "running" indicator */
 
