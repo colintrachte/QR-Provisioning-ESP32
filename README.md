@@ -1,8 +1,8 @@
 # robot-provisioning
 
-WiFi provisioning and RC control firmware for the **Heltec WiFi LoRa 32 V3** (ESP32-S3).
+WiFi provisioning and RC control firmware for the **Heltec WiFi LoRa 32 V3** (ESP32-S3). Working on support for TTGO v1 and WEMOS D1 Mini (8266 requires arduino framework)
 
-Pure ESP-IDF 5.x — no Arduino, no Espressif provisioning app, no BLE.
+PlatformIO + ESP-IDF 5.x for ESP32 based devices — no Espressif provisioning app.
 Connect via browser on any phone or PC.
 
 ---
@@ -86,9 +86,8 @@ git submodule add https://github.com/olikraus/u8g2.git components/u8g2
 # Needs edits to work with ESP32-S3: delete idf_component.yml, patch I2C host names.
 # Source: https://github.com/mdvorak/esp-u8g2-hal → components/u8g2_hal
 
-# LittleFS
-git submodule add https://github.com/joltwallet/esp_littlefs.git components/esp_littlefs
-cd components/esp_littlefs && git submodule update --init --recursive && cd ../..
+# These are managed components in idf_component.yml
+# LittleFS, mdns
 ```
 
 ### Configure
