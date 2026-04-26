@@ -57,6 +57,7 @@ static const char *TAG = "wifi_mgr";
 static wifi_manager_config_t  s_cfg;
 static EventGroupHandle_t     s_sta_evt_grp = NULL;
 static bool                   s_connected   = false;
+static volatile bool          s_ap_shutting_down = false;  /* suppress AP events during intentional shutdown */
 static char                   s_ip[16]      = {0};
 static char                   s_sta_ssid[33] = {0};
 static volatile int           s_retry_count  = 0;
@@ -127,6 +128,10 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             fire_state(WIFI_MANAGER_STATE_CLIENT_CONNECTED);
             break;
         case WIFI_EVENT_AP_STADISCONNECTED:
+            if (s_ap_shutting_down) {
+                /* AP is being shut down intentionally — ignore client disconnects */
+                break;
+            }
             ESP_LOGI(TAG, "AP: client left");
             fire_state(WIFI_MANAGER_STATE_CLIENT_DISCONNECTED);
             break;
