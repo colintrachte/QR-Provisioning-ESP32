@@ -221,41 +221,6 @@ static esp_err_t handle_setup_css(httpd_req_t *req)
 static esp_err_t handle_setup_js(httpd_req_t *req)
     { return serve_file(req, FS_BASE "/setup.js", "application/javascript"); }
 
-static esp_err_t handle_probe_apple(httpd_req_t *req)
-{
-    static const char BODY[] =
-        "<HTML><HEAD><TITLE>Success</TITLE></HEAD>"
-        "<BODY><script>window.location.replace('http://" AP_GW_IP "/');</script>"
-        "</BODY></HTML>";
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, BODY, sizeof(BODY) - 1);
-    return ESP_OK;
-}
-
-static esp_err_t handle_probe_win_modern(httpd_req_t *req)
-    { httpd_resp_set_type(req, "text/plain");
-      httpd_resp_sendstr(req, "Microsoft Connect Test"); return ESP_OK; }
-
-static esp_err_t handle_probe_win_legacy(httpd_req_t *req)
-    { httpd_resp_set_type(req, "text/plain");
-      httpd_resp_sendstr(req, "Microsoft NCSI"); return ESP_OK; }
-
-static esp_err_t handle_probe_win_redirect(httpd_req_t *req)
-{
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location",
-                       "http://www.msftconnecttest.com/redirect");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
-}
-
-static esp_err_t handle_probe_android(httpd_req_t *req)
-{
-    httpd_resp_set_status(req, "204 No Content");
-    httpd_resp_send(req, NULL, 0);
-    return ESP_OK;
-}
-
 static esp_err_t handle_redirect(httpd_req_t *req)
 {
     httpd_resp_set_status(req, "302 Found");
@@ -384,15 +349,19 @@ static void start_httpd(void)
         { .uri="/base.css",                  .method=HTTP_GET,  .handler=handle_base_css          },
         { .uri="/setup.css",                 .method=HTTP_GET,  .handler=handle_setup_css         },
         { .uri="/setup.js",                  .method=HTTP_GET,  .handler=handle_setup_js          },
-        { .uri="/hotspot-detect.html",       .method=HTTP_GET,  .handler=handle_probe_apple       },
-        { .uri="/library/test/success.html", .method=HTTP_GET,  .handler=handle_probe_apple       },
-        { .uri="/connecttest.txt",           .method=HTTP_GET,  .handler=handle_probe_win_modern  },
-        { .uri="/connecttest.txt",           .method=HTTP_HEAD, .handler=handle_probe_win_modern  },
-        { .uri="/ncsi.txt",                  .method=HTTP_GET,  .handler=handle_probe_win_legacy  },
-        { .uri="/ncsi.txt",                  .method=HTTP_HEAD, .handler=handle_probe_win_legacy  },
-        { .uri="/redirect",                  .method=HTTP_GET,  .handler=handle_probe_win_redirect},
-        { .uri="/generate_204",              .method=HTTP_GET,  .handler=handle_probe_android     },
-        { .uri="/gen_204",                   .method=HTTP_GET,  .handler=handle_probe_android     },
+        { .uri="/hotspot-detect.html",       .method=HTTP_GET,  .handler=handle_redirect       },
+        { .uri="/library/test/success.html", .method=HTTP_GET,  .handler=handle_redirect       },
+        { .uri="/connecttest.txt",           .method=HTTP_GET,  .handler=handle_redirect  },
+        { .uri="/connecttest.txt",           .method=HTTP_HEAD, .handler=handle_redirect  },
+        { .uri="/ncsi.txt",                  .method=HTTP_GET,  .handler=handle_redirect  },
+        { .uri="/ncsi.txt",                  .method=HTTP_HEAD, .handler=handle_redirect  },
+        { .uri="/redirect",                  .method=HTTP_GET,  .handler=handle_redirect},
+        { .uri="/generate_204",              .method=HTTP_GET,  .handler=handle_redirect     },
+        { .uri="/gen_204",                   .method=HTTP_GET,  .handler=handle_redirect     },
+        { .uri="/generate_204",              .method=HTTP_GET,  .handler=handle_redirect },
+        { .uri="/gen_204",                   .method=HTTP_GET,  .handler=handle_redirect },
+        { .uri="/mobile/status.php",         .method=HTTP_GET,  .handler=handle_redirect }, /* Samsung */
+        { .uri="/connectivitycheck.mobile.txt", .method=HTTP_GET, .handler=handle_redirect }, /* some carriers */
         { .uri="/api/scan",                  .method=HTTP_GET,  .handler=handle_scan              },
         { .uri="/api/rescan",                .method=HTTP_GET,  .handler=handle_rescan            },
         { .uri="/api/connect",               .method=HTTP_POST, .handler=handle_connect           },
