@@ -32,7 +32,7 @@
 static const char *TAG = "portal";
 
 #define FS_BASE       "/littlefs"
-#define SERVE_CHUNK   4096
+#define SERVE_CHUNK  8192
 
 /* ── File serving helper ───────────────────────────────────────────────────*/
 static esp_err_t serve_file(httpd_req_t *req, const char *path,
@@ -318,24 +318,37 @@ static esp_err_t handle_probe(httpd_req_t *req)
 {
     const char *uri = req->uri;
 
-    /* iOS / macOS — redirect triggers CNA popup immediately.
-     * CNA follows the redirect and loads our setup page in its WebView. */
+    /* ── iOS / macOS (CNA) ────────────────────────────────────────────────
+     * CNA probes these paths and expects a redirect to trigger the popup.
+     * The system WebView follows the redirect automatically. */
     if (strcmp(uri, "/hotspot-detect.html")       == 0 ||
-        strcmp(uri, "/library/test/success.html") == 0) {
+        strcmp(uri, "/library/test/success.html") == 0 ||
+        strcmp(uri, "/ captive.apple.com")        == 0) {  /* some versions */
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
         httpd_resp_send(req, NULL, 0);
         return ESP_OK;
     }
 
-    /* Android — returning 200 instead of 204 signals captive portal.
-     * Include a meta-refresh so the WebView lands on our page if it
-     * renders the body (behaviour varies by Android version). */
+    /* ── Android ────────────────────────────────────────────────────────────
+     * Android checks multiple Google endpoints. The key signal is:
+     *   - ANY response other than HTTP 204 No Content = captive portal detected
+     *   - 302 redirect does NOT trigger the popup on modern Android
+     *
+     * We must return 200 OK with a body (or redirect via meta-refresh in body)
+     * on ALL of these paths, regardless of which hostname was used.
+     *
+     * Probe URLs used by Android versions:
+     *   /generate_204          (legacy, still used)
+     *   /gen_204               (rare)
+     *   /connectivitycheck     (some OEM skins)
+     */
     if (strcmp(uri, "/generate_204") == 0 ||
         strcmp(uri, "/gen_204")      == 0) {
+        /* Return 200 with body instead of 204 — this is the captive signal */
         static const char BODY[] =
             "<HTML><HEAD>"
-            "<meta http-equiv='refresh' content='0;url=http://" AP_GW_IP "/'>"  /* single-quoted attrs: no escaping needed */
+            "<meta http-equiv='refresh' content='0;url=http://" AP_GW_IP "/'>"
             "</HEAD><BODY></BODY></HTML>";
         httpd_resp_set_status(req, "200 OK");
         httpd_resp_set_type(req, "text/html");
@@ -343,31 +356,75 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Windows NCSI — return wrong body so NCSI fails the check.
-     * /redirect: point at ourselves instead of msftconnecttest.com so the
-     * chain fails and NCSI marks the interface captive. */
-    if (strcmp(uri, "/connecttest.txt") == 0 ||
-        strcmp(uri, "/ncsi.txt")        == 0) {
+    /* ── Windows NCSI ───────────────────────────────────────────────────────
+     * Windows 10/11 uses a multi-step probe:
+     *   1. GET /connecttest.txt  → expects "Microsoft Connect Test"
+     *   2. GET /ncsi.txt         → expects "Microsoft NCSI" (legacy)
+     *   3. GET /redirect         → expects 302 to msftconnecttest.com
+     *   4. GET /connecttest.txt  again from msftconnecttest.com
+     *
+     * If step 1 or 4 returns wrong content → NCSI marks "No internet".
+     * If step 3 redirect is wrong → browser opens to wrong domain (MSN).
+     *
+     * Strategy: Return CORRECT text for /connecttest.txt so NCSI thinks
+     * the check passed, BUT we serve it from OUR server via DNS hijack.
+     * NCSI then tries /redirect, which we point back to ourselves so the
+     * browser opens to our AP IP instead of msftconnecttest.com.
+     *
+     * Actually, better strategy: FAIL the text check so NCSI knows it's
+     * captive, then the browser opens automatically to the redirect target.
+     */
+    if (strcmp(uri, "/connecttest.txt") == 0) {
+        /* Return WRONG body → NCSI fails → marks captive */
         httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "captive");   /* wrong body → NCSI fails */
+        httpd_resp_sendstr(req, "captive");   /* NOT "Microsoft Connect Test" */
+        return ESP_OK;
+    }
+    if (strcmp(uri, "/ncsi.txt") == 0) {
+        /* Legacy Windows pre-10 1607 */
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "captive");   /* NOT "Microsoft NCSI" */
         return ESP_OK;
     }
     if (strcmp(uri, "/redirect") == 0) {
+        /* This is what Windows opens in the browser after detecting captive.
+         * Redirect to our portal page. The browser follows this. */
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
         httpd_resp_send(req, NULL, 0);
         return ESP_OK;
     }
 
-    /* Linux / NetworkManager — wrong body triggers portal detection */
-    if (strcmp(uri, "/nm-check.txt") == 0) {
+    /* Windows 11 new probe */
+    if (strcmp(uri, "/captiveportal/generate_204") == 0) {
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "text/html");
+        static const char BODY[] =
+            "<HTML><HEAD>"
+            "<meta http-equiv='refresh' content='0;url=http://" AP_GW_IP "/'>"
+            "</HEAD><BODY></BODY></HTML>";
+        httpd_resp_send(req, BODY, sizeof(BODY) - 1);
+        return ESP_OK;
+    }
+
+    /* ── Linux / NetworkManager ─────────────────────────────────────────────*/
+    if (strcmp(uri, "/nm-check.txt") == 0 ||
+        strcmp(uri, "/check_network_status.txt") == 0) {
         httpd_resp_set_type(req, "text/plain");
         httpd_resp_sendstr(req, "captive");
         return ESP_OK;
     }
 
-    /* Wildcard — browser navigation, unknown probes, anything else.
-     * Redirect to setup page; DNS hijack ensures this catches everything. */
+    /* ── Firefox ────────────────────────────────────────────────────────────*/
+    if (strcmp(uri, "/canonical.html") == 0) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    /* ── Wildcard ──────────────────────────────────────────────────────────
+     * Any other request (including direct browser navigation) → redirect */
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
     httpd_resp_send(req, NULL, 0);
@@ -404,9 +461,24 @@ static esp_err_t handle_scan(httpd_req_t *req)
 }
 
 /* GET /api/rescan — blocking refresh, returns fresh JSON */
+static volatile bool s_scan_pending = false;
+
+static void scan_bg_task(void *arg)
+{
+    (void)arg;
+    run_scan_once();
+    s_scan_pending = false;
+    vTaskDelete(NULL);
+}
+
+/* GET /api/rescan — triggers background scan, returns current cache */
 static esp_err_t handle_rescan(httpd_req_t *req)
 {
-    run_scan_once();   /* blocks httpd task ~3 s; acceptable for explicit action */
+    if (!s_scan_pending) {
+        s_scan_pending = true;
+        xTaskCreate(scan_bg_task, "portal_rescan", 4096, NULL, 3, NULL);
+    }
+    /* Return current cache immediately; client polls /api/scan */
     return handle_scan(req);
 }
 
@@ -493,28 +565,23 @@ static void start_httpd(void)
     }
 
     static const httpd_uri_t routes[] = {
-        /* Setup page and its assets */
+        /* Setup page and assets — SPECIFIC first */
         { .uri="/",           .method=HTTP_GET,  .handler=handle_root      },
         { .uri="/base.css",   .method=HTTP_GET,  .handler=handle_base_css  },
         { .uri="/setup.css",  .method=HTTP_GET,  .handler=handle_setup_css },
         { .uri="/setup.js",   .method=HTTP_GET,  .handler=handle_setup_js  },
         { .uri="/favicon.svg",.method=HTTP_GET,  .handler=handle_favicon   },
         { .uri="/favicon.ico",.method=HTTP_GET,  .handler=handle_favicon   },
-        /* WiFi credentials API */
+
+        /* WiFi API — SPECIFIC */
         { .uri="/api/scan",   .method=HTTP_GET,  .handler=handle_scan      },
         { .uri="/api/rescan", .method=HTTP_GET,  .handler=handle_rescan    },
         { .uri="/api/connect",.method=HTTP_POST, .handler=handle_connect   },
-        /* All OS connectivity probes + wildcard redirect → one handler.
-         * HEAD verbs for Windows NCSI are covered by the GET handlers;
-         * ESP-IDF httpd sends headers-only automatically for HEAD. */
+
+        /* OS captive portal probes — catch-all for detection URLs */
         { .uri="/*",          .method=HTTP_GET,  .handler=handle_probe     },
         { .uri="/*",          .method=HTTP_HEAD, .handler=handle_probe     },
     };
-    for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
-        httpd_register_uri_handler(s_httpd, &routes[i]);
-
-    ESP_LOGI(TAG, "Portal httpd started");
-}
 
 /* ── Public API ────────────────────────────────────────────────────────────*/
 

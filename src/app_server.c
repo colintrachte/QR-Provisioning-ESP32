@@ -32,7 +32,7 @@
 static const char *TAG = "app_server";
 
 #define FS_BASE     "/littlefs"
-#define SERVE_CHUNK  4096
+#define SERVE_CHUNK  8192
 
 /* serve_file — gzip-transparent static file server.
  *
@@ -171,43 +171,101 @@ static int               s_scan_count  = 0;
 static bool              s_scan_ready  = false;
 static volatile bool     s_scan_running = false;
 
+/* ── Scan synchronisation ─────────────────────────────────────────────────*/
+static EventGroupHandle_t s_scan_evt    = NULL;
+#define SCAN_DONE_BIT      BIT0
+static bool s_events_registered = false;  /* WiFi event handler registered once */
+
+/* Called once during app_server_start() to create the event group */
+static void scan_init(void)
+{
+    if (!s_scan_evt) s_scan_evt = xEventGroupCreate();
+}
+
+/* Event handler callback — registered with esp_event_handler_register() */
+static void scan_event_cb(void *arg, esp_event_base_t base,
+                          int32_t id, void *data)
+{
+    (void)arg; (void)data;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        if (s_scan_evt) xEventGroupSetBits(s_scan_evt, SCAN_DONE_BIT);
+    }
+}
+
 static void scan_task(void *arg)
 {
-    wifi_scan_config_t cfg = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+    wifi_scan_config_t cfg = {
+        .show_hidden = false,
+        .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
+    };
     s_scan_running = true;
 
-    if (esp_wifi_scan_start(&cfg, true) == ESP_OK) {
-        uint16_t count = MAX_SCAN_APS;
-        wifi_ap_record_t *recs = calloc(MAX_SCAN_APS, sizeof(wifi_ap_record_t));
-        if (recs) {
-            esp_wifi_scan_get_ap_records(&count, recs);
-
-            xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-            s_scan_count = 0;
-            for (int i = 0; i < (int)count && s_scan_count < MAX_SCAN_APS; i++) {
-                if (recs[i].ssid[0] == '\0') continue;
-                int si = 0;
-                for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
-                    char c = (char)recs[i].ssid[j];
-                    if ((c == '"' || c == '\\') && si < 31)
-                        s_scan_aps[s_scan_count].ssid[si++] = '\\';
-                    if (si < 32) s_scan_aps[s_scan_count].ssid[si++] = c;
-                }
-                s_scan_aps[s_scan_count].ssid[si] = '\0';
-                s_scan_aps[s_scan_count].rssi    = recs[i].rssi;
-                s_scan_aps[s_scan_count].quality =
-                    recs[i].rssi <= -100 ? 0 : recs[i].rssi >= -40 ? 100 :
-                    2 * (recs[i].rssi + 100);
-                s_scan_aps[s_scan_count].secure  =
-                    (recs[i].authmode != WIFI_AUTH_OPEN);
-                s_scan_count++;
-            }
-            s_scan_ready = true;
-            xSemaphoreGive(s_scan_mutex);
-            free(recs);
-            ESP_LOGI(TAG, "Scan complete: %d APs", s_scan_count);
-        }
+    /* Start non-blocking scan */
+    if (esp_wifi_scan_start(&cfg, false) != ESP_OK) {
+        ESP_LOGW(TAG, "Scan start failed");
+        s_scan_running = false;
+        vTaskDelete(NULL);
+        return;
     }
+
+    /* Wait for completion — yields CPU to httpd and other tasks */
+    EventBits_t bits = xEventGroupWaitBits(
+        s_scan_evt,
+        SCAN_DONE_BIT,
+        pdTRUE,          /* clear on exit */
+        pdFALSE,
+        pdMS_TO_TICKS(6000));
+
+    if (!(bits & SCAN_DONE_BIT)) {
+        ESP_LOGW(TAG, "Scan timeout");
+        s_scan_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    uint16_t count = MAX_SCAN_APS;
+    wifi_ap_record_t *recs = calloc(MAX_SCAN_APS, sizeof(wifi_ap_record_t));
+    if (!recs) {
+        s_scan_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t err = esp_wifi_scan_get_ap_records(&count, recs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(err));
+        free(recs);
+        s_scan_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
+    s_scan_count = 0;
+    for (int i = 0; i < (int)count && s_scan_count < MAX_SCAN_APS; i++) {
+        if (recs[i].ssid[0] == '\0') continue;
+
+        int si = 0;
+        for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
+            char c = (char)recs[i].ssid[j];
+            if ((c == '"' || c == '\\') && si < 31)
+                s_scan_aps[s_scan_count].ssid[si++] = '\\';
+            if (si < 32) s_scan_aps[s_scan_count].ssid[si++] = c;
+        }
+        s_scan_aps[s_scan_count].ssid[si] = '\0';
+        s_scan_aps[s_scan_count].rssi    = recs[i].rssi;
+        s_scan_aps[s_scan_count].quality =
+            recs[i].rssi <= -100 ? 0 : recs[i].rssi >= -40 ? 100 :
+            2 * (recs[i].rssi + 100);
+        s_scan_aps[s_scan_count].secure  =
+            (recs[i].authmode != WIFI_AUTH_OPEN);
+        s_scan_count++;
+    }
+    s_scan_ready = true;
+    xSemaphoreGive(s_scan_mutex);
+    free(recs);
+
+    ESP_LOGI(TAG, "Scan complete: %d APs", s_scan_count);
     s_scan_running = false;
     vTaskDelete(NULL);
 }
@@ -576,9 +634,22 @@ esp_err_t app_server_start(void)
 {
     s_ws_mutex   = xSemaphoreCreateMutex();
     s_scan_mutex = xSemaphoreCreateMutex();
+    scan_init();
     for (int i = 0; i < MAX_WS_CLIENTS; i++) s_ws_fds[i] = -1;
 
-    vfs_mount_littlefs();
+    if (!s_events_registered) {
+        esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                   scan_event_cb, NULL);
+        s_events_registered = true;
+    }
+    esp_err_t ret = vfs_mount_littlefs();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mount LittleFS, aborting server start.");
+        /* Clean up semaphores to avoid leak on retry */
+        if (s_ws_mutex)   { vSemaphoreDelete(s_ws_mutex);   s_ws_mutex = NULL; }
+        if (s_scan_mutex) { vSemaphoreDelete(s_scan_mutex); s_scan_mutex = NULL; }
+        return ret;
+    }
     log_fs_inventory();   /* logs all files + gz status to serial */
 
     httpd_config_t cfg    = HTTPD_DEFAULT_CONFIG();

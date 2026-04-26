@@ -25,7 +25,7 @@
 
 static const char *TAG = "i_sensors";
 
-#define I2C_PROBE_TIMEOUT_MS  150
+#define I2C_PROBE_TIMEOUT_MS  50
 
 static bool               s_initialized = false;
 static i2c_master_bus_handle_t s_bus    = NULL;
