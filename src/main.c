@@ -224,7 +224,11 @@ void app_main(void)
 
         if (wifi_manager_is_connected() && !app_task_spawned) {
             ESP_LOGI(TAG, "STA connected — spawning app_task");
-            xTaskCreate(app_task, "app_task", 4096, NULL, 5, NULL);
+            /* Pin app_task to Core 1 (APP_CPU) so motor command
+             * processing on the httpd task (Core 0 / PRO_CPU) is
+             * never preempted by telemetry or sensor work. */
+            xTaskCreatePinnedToCore(app_task, "app_task", 4096,
+                                    NULL, 5, NULL, 1);
             app_task_spawned = true;
         }
 

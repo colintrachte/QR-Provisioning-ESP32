@@ -3,7 +3,7 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 // All tunable values in one place. These could be exposed in a settings UI.
 const CFG = {
-    sendRateMs:   50,      // 20 Hz command rate
+    sendRateMs:   20,      // 50 Hz command rate — halves worst-case queuing latency
     reconnectMs:  2000,
     pingRateMs:   2000,
     keyRampMs:    180,     // ms from 0→1 while key held; same rate to decay
@@ -11,6 +11,12 @@ const CFG = {
     expo:         0.35,    // 0 = linear, 1 = full cubic; fine low-speed feel
     ledPrefix:    'led',
 };
+
+// Pre-allocated binary axes buffer: [type=0x01][i16 x][i16 y] = 5 bytes
+// Reused every frame — no garbage generated on the hot send path.
+const _axesBuf  = new ArrayBuffer(5);
+const _axesView = new DataView(_axesBuf);
+_axesView.setUint8(0, 0x01);   // WS_MSG_AXES — matches app_server.c
 
 // ── State ─────────────────────────────────────────────────────────────────────
 // Single source of truth — no scattered globals.
@@ -238,17 +244,31 @@ function schedulePing() {
     }, CFG.pingRateMs);
 }
 
-// ── Send loop (20 Hz) ─────────────────────────────────────────────────────────
+// ── Send loop (50 Hz) ─────────────────────────────────────────────────────────
+// Binary axes packet: [0x01][int16 x*10000][int16 y*10000] = 5 bytes.
+// int16 gives 0.0001 resolution — well below any meaningful motor step.
+// Pre-allocated buffer: zero garbage per frame on the hot path.
+//
+// "stop" is sent as text (infrequent, keeps firmware dispatch simple).
+// LED is sent as text only when value changes (already change-gated).
+function sendAxes() {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!state.armed || (state.axisX === 0 && state.axisY === 0)) {
+        socket.send('stop');
+        return;
+    }
+    // Clamp to int16 range after scaling — handles floating-point edge cases
+    const ix = Math.max(-32768, Math.min(32767, (state.axisX * 10000) | 0));
+    const iy = Math.max(-32768, Math.min(32767, (state.axisY * 10000) | 0));
+    _axesView.setInt16(1, ix, true);   // little-endian
+    _axesView.setInt16(3, iy, true);
+    socket.send(_axesBuf);
+}
+
 function startSendLoop() {
     clearInterval(sendTimer);
     sendTimer = setInterval(() => {
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
-        const moving = state.armed && (state.axisX !== 0 || state.axisY !== 0);
-        socket.send(moving
-            ? `x:${state.axisX.toFixed(3)},y:${state.axisY.toFixed(3)}`
-            : 'stop');
-
+        sendAxes();
         sendLed();
         scheduleRaf();   // keep track bars in sync with what we're sending
     }, CFG.sendRateMs);
@@ -258,7 +278,7 @@ function startSendLoop() {
 let zoneRect        = null;
 let activePointerId = null;
 
-new ResizeObserver(() => { zoneRect = null; }).observe(dom.zone);
+new ResizeObserver(() => { zoneRect = null; state._knobHalfW = 0; }).observe(dom.zone);
 
 function getZoneRect() {
     if (!zoneRect) zoneRect = dom.zone.getBoundingClientRect();
@@ -271,7 +291,9 @@ function pointerToAxes(clientX, clientY) {
     const cy   = r.top  + r.height / 2;
     let dx     = clientX - cx;
     let dy     = clientY - cy;
-    const maxR = (r.width / 2) - (dom.knob.offsetWidth / 2) - 4;
+    // dom.knob.offsetWidth triggers layout — cache it after first read
+    if (!state._knobHalfW) state._knobHalfW = dom.knob.offsetWidth / 2;
+    const maxR = (r.width / 2) - state._knobHalfW - 4;
     const dist = Math.hypot(dx, dy);
     if (dist > maxR) { const s = maxR / dist; dx *= s; dy *= s; }
     setRaw(dx / maxR, -dy / maxR);
@@ -431,16 +453,30 @@ function renderFrame() {
     dom.errors.textContent = state.errors;
 }
 
+// Per-side render state cache — avoids redundant DOM writes
+const _cardState = { left: null, right: null };
+
 function renderTrackCard(side, duty) {
-    const absD  = Math.abs(duty);
-    const pct   = Math.round(absD * 100);
-    const state_s = absD > 0.01 ? 'RUNNING' : 'STOPPED';
-    dom.speeds[side].textContent    = pct + '%';
-    dom.dirs[side].textContent      = absD < 0.01 ? '—' : duty > 0 ? '▲ FWD' : '▼ REV';
-    dom.bars[side].style.width      = pct + '%';
-    dom.states[side].textContent    = state_s;
-    dom.bars[side].style.background = state_s === 'RUNNING' ? 'var(--clr-running)' : 'var(--clr-stopped)';
-    dom.cards[side].dataset.state   = state_s;
+    const absD    = Math.abs(duty);
+    const pct     = Math.round(absD * 100);
+    const running = absD > 0.01;
+    const state_s = running ? 'RUNNING' : 'STOPPED';
+    const prev    = _cardState[side];
+
+    // Only write DOM properties that actually changed
+    if (!prev || prev.pct !== pct) {
+        dom.speeds[side].textContent = pct + '%';
+        dom.bars[side].style.width   = pct + '%';
+    }
+    if (!prev || prev.fwd !== (duty > 0) || prev.running !== running) {
+        dom.dirs[side].textContent = absD < 0.01 ? '—' : duty > 0 ? '▲ FWD' : '▼ REV';
+    }
+    if (!prev || prev.state_s !== state_s) {
+        dom.states[side].textContent    = state_s;
+        dom.bars[side].style.background = running ? 'var(--clr-running)' : 'var(--clr-stopped)';
+        dom.cards[side].dataset.state   = state_s;
+    }
+    _cardState[side] = { pct, fwd: duty > 0, running, state_s };
 }
 
 // ── E-stop ────────────────────────────────────────────────────────────────────
