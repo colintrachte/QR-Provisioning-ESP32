@@ -88,6 +88,7 @@ Motor pins and all other assignments are in [`main/config.h`](main/config.h).
 
 ### Prerequisites
 
+- [Python](https://www.python.org/downloads/)
 - [VS Code](https://code.visualstudio.com/) + [PlatformIO IDE](https://platformio.org/install/ide?install=vscode)
 - [Git](https://git-scm.com/)
 - ESP-IDF 5.x (PlatformIO downloads this automatically)
@@ -121,18 +122,6 @@ Edit [`main/config.h`](main/config.h):
 #define AP_SSID     "RobotSetup"   // Device's own setup AP name
 #define AP_PASSWORD "robot1234"    // Min 8 chars. "" for open (not recommended)
 ```
-
-### First-Time Build
-
-Create `sdkconfig.defaults` in project root (see [Kconfig docs](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/kconfig.html)):
-
-```
-CONFIG_HTTPD_WS_SUPPORT=y
-CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-CONFIG_OTA_ALLOW_HTTP=y
-```
-
-> ESP-IDF ignores `-DCONFIG_*` in `platformio.ini` `build_flags` - these are only for 8266/Arduino
 
 ### Build, Flash, Monitor
 
