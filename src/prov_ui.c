@@ -246,7 +246,7 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx)
         render_qr_screen(QR_SETUP, "Scan to setup:", WIFI_MANAGER_AP_IP, "");
         break;
 
-    case WIFI_MANAGER_STATE_CLIENT_GONE:
+    case WIFI_MANAGER_STATE_CLIENT_DISCONNECTED:
         render_qr_screen(QR_WIFI, "Join AP:",
                          AP_SSID, AP_PASSWORD[0] ? AP_PASSWORD : "(open)");
         break;

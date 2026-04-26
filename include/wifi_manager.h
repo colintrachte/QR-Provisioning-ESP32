@@ -45,7 +45,7 @@ typedef enum {
     WIFI_MANAGER_STATE_CONNECTING_SAVED,  /* Trying NVS-stored credentials  */
     WIFI_MANAGER_STATE_AP_STARTED,        /* SoftAP up, waiting for client  */
     WIFI_MANAGER_STATE_CLIENT_CONNECTED,  /* A device joined the AP         */
-    WIFI_MANAGER_STATE_CLIENT_GONE,       /* That device left the AP        */
+    WIFI_MANAGER_STATE_CLIENT_DISCONNECTED, /* That device left the AP        */
     WIFI_MANAGER_STATE_CREDS_RECEIVED,    /* portal.c submitted credentials */
     WIFI_MANAGER_STATE_STA_CONNECTING,    /* Connecting to target network    */
     WIFI_MANAGER_STATE_STA_CONNECTED,     /* Connected — provisioning done  */

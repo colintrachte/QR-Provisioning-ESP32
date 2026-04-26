@@ -89,6 +89,19 @@ static void nvs_save(const char *ssid, const char *pass)
     ESP_LOGI(TAG, "Credentials saved to NVS (SSID=%s)", ssid);
 }
 
+static void fire_state(wifi_manager_state_t state)
+{
+    ESP_LOGI(TAG, "state → %d", (int)state);
+    if (s_cfg.on_state_change)
+        s_cfg.on_state_change(state, s_cfg.cb_ctx);
+}
+
+static void fire_connected(void)
+{
+    if (s_cfg.on_connected)
+        s_cfg.on_connected(s_sta_ssid, s_ip, s_cfg.cb_ctx);
+}
+
 static void wifi_event_cb(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
 {
@@ -111,9 +124,11 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
         }
         case WIFI_EVENT_AP_STACONNECTED:
             ESP_LOGI(TAG, "AP: client joined");
+            fire_state(WIFI_MANAGER_STATE_CLIENT_CONNECTED);
             break;
         case WIFI_EVENT_AP_STADISCONNECTED:
             ESP_LOGI(TAG, "AP: client left");
+            fire_state(WIFI_MANAGER_STATE_CLIENT_DISCONNECTED);
             break;
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -176,19 +191,6 @@ static bool sta_connect(const char *ssid, const char *pass)
 
     esp_wifi_disconnect();
     return false;
-}
-
-static void fire_state(wifi_manager_state_t state)
-{
-    ESP_LOGI(TAG, "state → %d", (int)state);
-    if (s_cfg.on_state_change)
-        s_cfg.on_state_change(state, s_cfg.cb_ctx);
-}
-
-static void fire_connected(void)
-{
-    if (s_cfg.on_connected)
-        s_cfg.on_connected(s_sta_ssid, s_ip, s_cfg.cb_ctx);
 }
 
 static void reset_wifi_for_ap(void)
