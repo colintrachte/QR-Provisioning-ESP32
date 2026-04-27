@@ -342,5 +342,11 @@ setupUpload({
     },
 });
 
+window.onerror = (msg, url, line) => {
+    fetch('/api/jserror', {
+        method: 'POST',
+        body: `${msg} @ ${url}:${line}`
+    });
+};
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadStatus();

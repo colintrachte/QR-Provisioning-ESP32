@@ -89,8 +89,11 @@ static bool reprovision_requested(void)
 
 static void enter_safe_mode(const char *reason)
 {
-    ESP_LOGE(TAG, "SAFE MODE: %s (restart_count=%d)", reason, s_restart_count);
-    o_led_blink(LED_PATTERN_DOUBLE_BLINK);  /* distinctive pattern */
+    esp_reset_reason_t rst = esp_reset_reason();
+    ESP_LOGE(TAG, "SAFE MODE: %s (restart_count=%d, reset_reason=%d)",
+             reason, s_restart_count, (int)rst);
+
+    o_led_blink(LED_PATTERN_DOUBLE_BLINK);
 
     display_clear();
     display_draw_text(20,  0, "SAFE MODE",         DISP_FONT_BOLD);
@@ -99,9 +102,17 @@ static void enter_safe_mode(const char *reason)
     display_draw_text( 2, 29, reason,              DISP_FONT_SMALL);
     display_draw_hline(0, 44, DISP_WIDTH);
     display_draw_text( 2, 47, "Power cycle",       DISP_FONT_SMALL);
-    display_draw_text( 2, 55, "to recover",        DISP_FONT_SMALL);
-    display_flush();
 
+    /* Show reset reason on the last line instead of generic "to recover" */
+    char rst_str[20];
+    snprintf(rst_str, sizeof(rst_str), "Rst:%s",
+             rst == ESP_RST_PANIC    ? "PANIC" :
+             rst == ESP_RST_INT_WDT  ? "IWD" :
+             rst == ESP_RST_TASK_WDT ? "TWD" :
+             rst == ESP_RST_WDT      ? "WD" : "OTHER");
+    display_draw_text( 2, 55, rst_str, DISP_FONT_SMALL);
+
+    display_flush();
     while (1) vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
@@ -136,7 +147,18 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "=== Robot Firmware — Heltec WiFi LoRa 32 V3 ===");
     ESP_LOGI(TAG, "Restart count: %d", s_restart_count);
-
+    esp_reset_reason_t rst = esp_reset_reason();
+    ESP_LOGI(TAG, "Reset reason: %d (%s)", (int)rst,
+             rst == ESP_RST_POWERON   ? "POWERON" :
+             rst == ESP_RST_SW        ? "SW" :
+             rst == ESP_RST_PANIC     ? "PANIC" :
+             rst == ESP_RST_INT_WDT   ? "INT_WDT" :
+             rst == ESP_RST_TASK_WDT  ? "TASK_WDT" :
+             rst == ESP_RST_WDT       ? "WDT" :
+             rst == ESP_RST_DEEPSLEEP ? "DEEPSLEEP" :
+             rst == ESP_RST_BROWNOUT  ? "BROWNOUT" :
+             rst == ESP_RST_USB       ? "USB" :
+             rst == ESP_RST_JTAG      ? "JTAG" : "UNKNOWN");
     /* 1. Display: must be first so every subsequent step can show status. */
     display_init();
 

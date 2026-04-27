@@ -511,6 +511,7 @@ function setConnectionState(connected) {
 // Initialise mode from media query as a starting hint, then override on
 // first real event (touchstart / pointerdown with mouse type)
 state.lastInput = window.matchMedia('(pointer: coarse)').matches ? 'touch' : 'pointer';
+
 applyMode();
 connectWS();
 startSendLoop();

@@ -34,6 +34,20 @@ static const char *TAG = "app_server";
 #define FS_BASE     "/littlefs"
 #define SERVE_CHUNK  8192
 
+/* POST /api/jserror — forward frontend exceptions to the serial log */
+static esp_err_t handle_api_jserror(httpd_req_t *req)
+{
+    char body[256] = {0};
+    int n = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (n > 0) {
+        body[n] = '\0';
+        ESP_LOGW(TAG, "JS error: %s", body);
+    }
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 /* serve_file — gzip-transparent static file server.
  *
  * Gzip strategy (build-time compression, zero runtime CPU):
@@ -685,6 +699,7 @@ esp_err_t app_server_start(void)
         { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase   },
         { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
           .is_websocket=true                                                     },
+        { .uri="/api/jserror",   .method=HTTP_POST, .handler=handle_api_jserror },
         { .uri="/*",             .method=HTTP_GET,  .handler=handle_404         },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)

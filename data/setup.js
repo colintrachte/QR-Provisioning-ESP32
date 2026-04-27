@@ -182,6 +182,13 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+window.onerror = (msg, url, line) => {
+    fetch('/api/jserror', {
+        method: 'POST',
+        body: `${msg} @ ${url}:${line}`
+    });
+};
+
 /* ── Boot ──────────────────────────────────────────────────────────────────*/
 if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', init);
