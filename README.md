@@ -334,10 +334,10 @@ Served on port 80 after STA connects.
 
 ## Open Work / Roadmap
 
-> **Value:** 🔴 High — prevents bricks, reduces support, or unlocks new use cases
-> **Value:** 🔵 Medium — improves UX or expands capabilities
-> **Value:** 🟢 Low — nice to have, polish, or future-proofing
-> **Effort:** S = hours, M = days, L = weeks
+&gt; **Value:** 🔴 High — prevents bricks, reduces support, or unlocks new use cases  
+&gt; **Value:** 🔵 Medium — improves UX or expands capabilities  
+&gt; **Value:** 🟢 Low — nice to have, polish, or future-proofing  
+&gt; **Effort:** S = hours, M = days, L = weeks
 
 ---
 
@@ -345,12 +345,19 @@ Served on port 80 after STA connects.
 
 _These prevent bricks and make field debugging possible. Do these first._
 
-- [ ] **🔴S OTA checksum verification** — SHA-256 download + MD5 transfer integrity before `esp_ota_end()`. Prevents bricks from corrupted transfers. _(OpenNeato lesson)_
-- [ ] **🔴S Task + heap watchdogs** — Enable FreeRTOS task watchdog (5s timeout) and heap corruption detection. Catches infinite loops and memory corruption without physical reset. _(OpenNeato lesson)_
-- [ ] **🔴S Embed frontend into firmware binary** — Gzip SPA at build time, convert to C byte array. Serve from ROM. One OTA updates everything; no more "forgot `uploadfs`" failures. _(OpenNeato lesson)_
-- [ ] **🔵M Persistent event logging** — Compressed JSONL ring buffer on flash (last 5 sessions, ~100 KB each). Browsable/downloadable from UI. Optional remote syslog. Debug field issues without a serial cable. _(OpenNeato lesson)_
+- [ ] **🔴S OTA checksum verification** — SHA-256 download + MD5 transfer integrity before `esp_ota_end()`. Prevents bricks from corrupted transfers.
+- [ ] **🔴S Task + heap watchdogs** — Enable FreeRTOS task watchdog (5 s timeout) and heap corruption detection. Catches infinite loops and memory corruption without physical reset.
+- [ ] **🔴S Embed frontend into firmware binary** — Gzip SPA at build time, convert to C byte array. Serve from ROM. One OTA updates everything; no more "forgot `uploadfs`" failures.
+- [ ] **🔵M Persistent event logging** — Compressed JSONL ring buffer on flash (last 5 sessions, ~100 KB each). Browsable/downloadable from UI. Optional remote syslog. Debug field issues without a serial cable.
 - [ ] **🔵S Factory reset from UI** — Settings page button + GPIO0 hold → erase WiFi creds, reset to defaults, reboot into portal. Currently only GPIO0 works.
-- [ ] **🟢S Boot-loop diagnostics** — Log last reset reason and stack trace to NVS before reboot. Display on safe mode screen.
+- [ ] **🔵S Graceful WS shutdown before OTA reboot** — Close the HTTP server and send WS close frames before `esp_restart()` so the browser UI shows "updating" instead of a hung connection.
+- [ ] **🔵S Battery low warning** — Surface `BATTERY_WARN_PCT` threshold in telemetry JSON and on the OLED status bar. Prevents deep-discharge damage in the field.
+- [x] **🔴S Blocking WiFi scan** — Manual refresh only via `/api/rescan`. No background task = no missed-probe reboots.
+- [x] **🔴S Command watchdog** — Auto-disarm on disconnect (400 ms timeout).
+- [x] **🔴S Boot-loop guard** — Safe mode after `WIFI_MAX_RESTART_ATTEMPTS`.
+- [x] **🔴S OTA firmware + filesystem** — Separate endpoints, rollback support via `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`.
+- [x] **🟢S Boot-loop diagnostics** — Log `esp_reset_reason()` to serial at boot and display the reset cause on the safe mode screen.
+- [x] **🔵S I2C re-init after WiFi** — Handles ESP32-S3 peripheral reset via `display_reinit_i2c()`.
 
 ---
 
@@ -358,14 +365,16 @@ _These prevent bricks and make field debugging possible. Do these first._
 
 _These reduce friction for non-technical users and cut your support burden._
 
-- [ ] **🔴M Runtime user settings (JSON in NVS/LittleFS)** — Hostname, motor deadband, UI template, timezone, notification topic. Survives OTA. Stop recompiling `config.h` for every change. _(OpenNeato lesson)_
-- [ ] **🔴M Standalone flash tool** — Python/Go CLI that auto-detects USB, queries GitHub Releases, downloads correct `.bin`, flashes with bundled `esptool.py`. One command for non-technical users. _(OpenNeato lesson)_
+- [ ] **🔴M Runtime user settings (JSON in NVS/LittleFS)** — Hostname, motor deadband, UI template, timezone, notification topic. Survives OTA. Stop recompiling `config.h` for every change.
+- [ ] **🔴M Standalone flash tool** — Python/Go CLI that auto-detects USB, queries GitHub Releases, downloads correct `.bin`, flashes with bundled `esptool.py`. One command for non-technical users.
 - [ ] **🔵M Portal hibernation** — After N minutes of inactivity, reduce AP TX power or stop DNS task to save power. Wake on GPIO0 press or client reconnect.
 - [ ] **🔵S UI template switching** — Store template name in settings; serve matching HTML/CSS/JS. Template #1 = RC tank (current). Template #2 = sensor dashboard. Template #3 = autonomous waypoint editor.
 - [ ] **🔵S Per-AP credential history** — Remember last 3 SSIDs in NVS. Dropdown in portal instead of typing from scratch.
 - [ ] **🟢S Portal info page** — Build version, git hash, uptime, free heap, reset button. Helps users report bugs accurately.
 - [ ] **🟢S Static IP option** — In settings, allow optional static IP/gateway/DNS instead of DHCP. Useful for fixed installations.
-- [ ] **🟢S Favicon** — Serve real icon from flash instead of 204 No Content. Browsers re-request on every load without one.
+- [x] **🟢S Favicon** — Served from `/littlefs/favicon.svg` by `app_server.c`.
+- [x] **🔵M SoftAP captive portal** — DNS hijack, OS probe handlers (Windows/iOS/Android), credential POST.
+- [x] **🔵M OLED state machine** — QR codes (WiFi join, portal URL, robot URL), boot splash, connected screen.
 
 ---
 
@@ -373,10 +382,11 @@ _These reduce friction for non-technical users and cut your support burden._
 
 _These make the browser experience richer and more debuggable._
 
-- [ ] **🔵S JS error reporting** — `window.onerror` → POST `/api/jserror` so frontend bugs appear in serial log. Currently invisible once deployed.
+- [x] **🔵S JS error reporting** — `window.onerror` → POST `/api/jserror` so frontend bugs appear in the serial log. Currently invisible once deployed.
 - [ ] **🔵S Latency display** — Show round-trip ping time in the control UI. Helps diagnose WiFi congestion.
 - [ ] **🟢S Connection quality indicator** — WiFi signal bars + packet loss estimate in the UI header.
 - [ ] **🟢S Dark mode toggle** — Persist preference in `localStorage`. Match `prefers-color-scheme` on first load.
+- [x] **🔴M WebSocket control** — Joystick, keyboard, arming, telemetry push at 5 Hz.
 
 ---
 
@@ -384,9 +394,9 @@ _These make the browser experience richer and more debuggable._
 
 _These turn the robot from a LAN toy into an internet-aware device._
 
-- [ ] **🔵M Push notifications (ntfy.sh)** — Optional alerts to phone: "Battery low", "Motor stall", "WiFi disconnected". User configures topic in settings. No app build needed. _(OpenNeato lesson)_
+- [ ] **🔵M Push notifications (ntfy.sh)** — Optional alerts to phone: "Battery low", "Motor stall", "WiFi disconnected". User configures topic in settings. No app build needed.
 - [ ] **🔵M Home Assistant / MQTT** — Publish telemetry to configurable broker. Accept command topics (`robot/cmd/stop`, `robot/cmd/led`). Auto-discover via HA MQTT integration.
-- [ ] **🔵M NTP time sync** — Sync RTC on boot and every 4h. Enables timestamped logs, scheduled autonomous missions, accurate uptime reporting. _(OpenNeato lesson)_
+- [ ] **🔵S NTP time sync** — Sync RTC on boot and every 4 h. Enables timestamped logs, scheduled autonomous missions, accurate uptime reporting. (ESP-IDF `esp_sntp.h` makes this small effort.)
 - [ ] **🔵M WebSocket vs UDP evaluation** — Prototype UDP control channel. Measure latency + jitter under load vs current WebSocket. Decide before committing to UDP for low-latency use cases.
 - [ ] **🟢L BLE provisioning path** — Alternative to SoftAP for phones that handle BLE pairing better than captive portals. ESP32-S3 has BLE 5.0. Keep SoftAP as fallback.
 - [ ] **🟢L LoRa integration** — Join [Meshtastic](https://meshtastic.org/) network or custom point-to-point protocol. Must enforce regional duty-cycle limits (EU 1%, US ISM unrestricted). Requires separate radio HAL.
@@ -398,7 +408,7 @@ _These turn the robot from a LAN toy into an internet-aware device._
 
 _These let the same firmware run on multiple boards without `#ifdef` spaghetti._
 
-- [ ] **🔵M Board abstraction layer** — GPIO pin tables per board in `components/boards/<name>.h`. Selected by build flag. Candidates:
+- [ ] **🔵M Board abstraction layer** — GPIO pin tables per board in `components/boards/&lt;name&gt;.h`. Selected by build flag. Candidates:
   - [Heltec WiFi LoRa 32 V3](https://heltec.org/project/wifi-lora-32-v3/) (current — ESP32-S3, SSD1306 I2C)
   - [TTGO LoRa32 V1](https://github.com/LilyGO/TTGO-LORA32) (ESP32, SSD1306 I2C, AXP192 PMIC, NEO-6M GPS)
   - [Heltec HTIT-Tracker](https://heltec.org/project/htit-tracker/) (ESP32-S3, confirm I2C pinout)
@@ -406,6 +416,7 @@ _These let the same firmware run on multiple boards without `#ifdef` spaghetti._
 - [ ] **🔵M TTGO V1 peripherals** — AXP192 PMIC driver (battery voltage, charge state, power management), NEO-6M GPS parser (UART2), onboard temperature sensor.
 - [ ] **🟢M SPI display support** — ST7735 / ILI9341 for boards without I2C OLED. u8g2 already supports these; needs HAL config in board header.
 - [ ] **🟢L E-paper display** — Low-power / solar use cases. Different refresh model (partial vs full updates). u8g2 has limited support; may need dedicated driver.
+- [x] **🔵M Motor driver abstraction** — `MOTOR_MODE_DIR_PWM_EN` and `MOTOR_MODE_BTN8982`.
 
 ---
 
@@ -413,27 +424,14 @@ _These let the same firmware run on multiple boards without `#ifdef` spaghetti._
 
 _These make the project maintainable as it grows and help others contribute._
 
-- [ ] **🔵M GitHub Discussions + Issue conventions** — Require Discussions for questions/setup help. Issues only for confirmed bugs. Naming: `feat:`, `fix:`, `enhance:`, `chore:`, `docs:`, `build:`. _(OpenNeato lesson)_
-- [ ] **🔵M `/prerelease` bot workflow** — Comment `/prerelease` on PR → GitHub Actions builds all targets, publishes to Releases as `vX.Y.Z-prerelease-N`. Testers flash without compiling. _(OpenNeato lesson)_
+- [ ] **🔵S Deduplicate `serve_file()`** — Extract the identical gzip-transparent file serving logic from `portal.c` and `app_server.c` into a shared helper (e.g., `vfs_mount.c` or `vfs_serve.h`). Shrinks binary and eliminates a maintenance hazard.
+- [ ] **🔵M GitHub Discussions + Issue conventions** — Require Discussions for questions/setup help. Issues only for confirmed bugs. Naming: `feat:`, `fix:`, `enhance:`, `chore:`, `docs:`, `build:`.
+- [ ] **🔵M `/prerelease` bot workflow** — Comment `/prerelease` on PR → GitHub Actions builds all targets, publishes to Releases as `vX.Y.Z-prerelease-N`. Testers flash without compiling.
 - [ ] **🟢S Unit tests** — ESP-IDF [Unity framework](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/unit-tests.html). Targets: `qr_gen` boundary values, `url_decode` edge cases, NVS round-trip, `best_qr_scale` clipping.
 - [ ] **🟢S CI build** — [GitHub Actions](https://github.com/features/actions) with ESP-IDF Docker. Build all three targets on push; fail on compiler warnings.
 - [ ] **🟢S CONTRIBUTING.md** — Build instructions, code style (Allman braces), module boundaries, how to add a WebSocket command, how to add a sensor.
 - [ ] **🟢S Architecture decision records (ADRs)** — Short markdown files in `docs/adr/` explaining why: LittleFS over SPIFFS, blocking scan over background scan, WebSocket over UDP, ESP-IDF over Arduino.
-
----
-
-### Completed ✅
-
-- [x] **SoftAP captive portal** — DNS hijack, OS probe handlers (Windows/iOS/Android), credential POST
-- [x] **Blocking WiFi scan** — Manual refresh only via `/api/rescan`. No background task = no missed probe reboots.
-- [x] **WebSocket control** — Joystick, keyboard, arming, telemetry push at 5 Hz
-- [x] **OTA firmware + filesystem** — Separate endpoints, rollback support via `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`
-- [x] **OLED state machine** — QR codes (WiFi join, portal URL, robot URL), boot splash, connected screen
-- [x] **Command watchdog** — Auto-disarm on disconnect (400 ms timeout)
-- [x] **Boot-loop guard** — Safe mode after `WIFI_MAX_RESTART_ATTEMPTS`
-- [x] **Motor driver abstraction** — `MOTOR_MODE_DIR_PWM_EN` and `MOTOR_MODE_BTN8982`
-- [x] **I2C re-init after WiFi** — Handles ESP32-S3 peripheral reset via `display_reinit_i2c()`
-- [x] **Shared LittleFS mount** — Idempotent `vfs_mount_littlefs()` prevents double-mount 404s
+- [x] **🔵S Shared LittleFS mount** — Idempotent `vfs_mount_littlefs()` prevents double-mount 404s.
 
 ---
 
