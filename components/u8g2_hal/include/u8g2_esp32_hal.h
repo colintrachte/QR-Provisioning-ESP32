@@ -85,7 +85,8 @@ i2c_master_bus_handle_t u8g2_esp32_hal_get_bus(void);
  *
  * @return ESP_OK on success, propagated esp_err_t otherwise.
  */
-esp_err_t u8g2_esp32_hal_reinit_bus(void);
+/* components/u8g2_hal/include/u8g2_esp32_hal.h */
+esp_err_t u8g2_esp32_hal_reinit_bus(i2c_master_bus_handle_t new_bus);
 
 /* u8g2 callback signatures (unchanged — registered with u8g2_Setup_*). */
 uint8_t u8g2_esp32_spi_byte_cb(u8x8_t *u8x8, uint8_t msg,

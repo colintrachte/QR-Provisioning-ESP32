@@ -92,7 +92,7 @@ void display_set_available(bool available);
  *         ESP_ERR_INVALID_STATE if display_init() has not run yet.
  *         Propagated esp_err_t from u8g2_esp32_hal_reinit_bus() on failure.
  */
-esp_err_t display_reinit_i2c(void);
+esp_err_t display_reinit_i2c(i2c_master_bus_handle_t new_bus);
 
 /* ── Escape hatch ───────────────────────────────────────────────────────────*/
 

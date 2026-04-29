@@ -224,7 +224,11 @@ void app_main(void)
     /* 8. I2C re-init after WiFi. No delay needed — re-init is explicit.
      *    i_sensors_init() calls display_reinit_i2c() before scanning. */
     i_sensors_init();
-
+    i2c_master_bus_handle_t bus = i_sensors_get_bus();
+    if (bus) {
+        display_reinit_i2c(bus);
+    }
+    display_set_available(i_sensors_get_peripheral_map()->oled);
     /* 9. Motor driver. */
     ctrl_drive_init();
 

@@ -13,7 +13,6 @@
  */
 
 #include "i_sensors.h"
-#include "display.h"
 #include "config.h"
 #include "u8g2_esp32_hal.h"
 #include <math.h>
@@ -69,38 +68,40 @@ void i_sensors_init(void)
     ESP_LOGI(TAG, "Installing I2C master bus (post-WiFi)");
 
     memset(&s_periph_map, 0, sizeof(s_periph_map));
+    vTaskDelay(pdMS_TO_TICKS(I2C_POST_WIFI_DELAY_MS));  // 100 ms S3, 250 ms classic
 
-    /* Let WiFi radio calibration finish before probing */
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    /* Reset existing bus if valid */
+    /* ── Bus lifecycle ─────────────────────────────────────────────────
+     * We are the sole owner of the I2C master bus. After esp_wifi_start()
+     * the peripheral is reset; the old handle is stale. Delete it fully
+     * before creating a new one, or classic ESP32 will give you
+     * ESP_ERR_INVALID_STATE on every transaction.
+     * ─────────────────────────────────────────────────────────────────*/
     if (s_bus) {
-        i2c_master_bus_reset(s_bus);
+        i2c_del_master_bus(s_bus);
         s_bus = NULL;
     }
 
-    esp_err_t err = display_reinit_i2c();
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port      = I2C_NUM_0,
+        .sda_io_num    = DISP_PIN_SDA,   // from board.h
+        .scl_io_num    = DISP_PIN_SCL,
+        .clk_source    = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "display_reinit_i2c failed: %s — OLED may be absent",
-                 esp_err_to_name(err));
-    }
-
-    s_bus = u8g2_esp32_hal_get_bus();
-    if (!s_bus) {
-        ESP_LOGE(TAG, "I2C bus not available — sensors unavailable");
-        display_set_available(false);
-        return;
+        ESP_LOGE(TAG, "i2c_new_master_bus failed: %s", esp_err_to_name(err));
+        return; /* Don't call display_set_available here — main.c will handle it */
     }
 
     run_scan();
 
-    /* Fallback: probe can spuriously fail while u8g2 transmit works */
+    /* Fallback logic unchanged... */
     if (!s_periph_map.oled && err == ESP_OK) {
-        ESP_LOGW(TAG, "Scan missed OLED, but display reinit OK — forcing present");
+        ESP_LOGW(TAG, "Scan missed OLED, but bus OK — forcing present");
         s_periph_map.oled = true;
     }
-
-    display_set_available(s_periph_map.oled);
 
     s_initialized = true;
     ESP_LOGI(TAG, "i_sensors_init OK (bus handle %p)", (void *)s_bus);

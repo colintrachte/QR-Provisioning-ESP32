@@ -27,6 +27,8 @@
  */
 #pragma once
 
+#define I2C_POST_WIFI_DELAY_MS  250
+
 /* ── Display (SSD1306 128×64, I2C) ─────────────────────────────────────────*/
 #define DISP_PIN_VEXT   (-1) /* No GPIO power switch — PMIC keeps rail on   */
 #define DISP_PIN_RST    16
@@ -76,3 +78,4 @@
 
 /* ── Board identity ─────────────────────────────────────────────────────────*/
 #define BOARD_NAME  "TTGO LoRa32 V1"
+#define I2C_POST_WIFI_DELAY_MS  100

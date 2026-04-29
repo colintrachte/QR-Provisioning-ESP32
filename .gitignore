@@ -30,10 +30,9 @@ Thumbs.db
 desktop.ini
 
 # Editor state (personal, not team config)
-.vscode/
+.vscode/*
 !.vscode/extensions.json
 !.vscode/arduino.json
-.vscode/*.log
 .vscode/launch.json
 .vscode/c_cpp_properties.json
 

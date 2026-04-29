@@ -156,18 +156,16 @@ void display_set_available(bool available)
  *
  * Returns ESP_OK on success, or the error from u8g2_esp32_hal_reinit_bus().
  */
-esp_err_t display_reinit_i2c(void)
+esp_err_t display_reinit_i2c(i2c_master_bus_handle_t new_bus)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
 
-    esp_err_t err = u8g2_esp32_hal_reinit_bus();
+    esp_err_t err = u8g2_esp32_hal_reinit_bus(new_bus);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "display_reinit_i2c: HAL reinit failed: %s",
-                 esp_err_to_name(err));
+        ESP_LOGE(TAG, "HAL reinit failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    /* Re-run controller init (does not clear GDDRAM). */
     u8g2_InitDisplay(&s_u8g2);
     u8g2_SetPowerSave(&s_u8g2, 0);
     u8g2_SetFontPosTop(&s_u8g2);

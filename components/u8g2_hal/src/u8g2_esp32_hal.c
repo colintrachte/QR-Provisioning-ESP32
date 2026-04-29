@@ -92,40 +92,26 @@ void u8g2_esp32_hal_init(u8g2_esp32_hal_t u8g2_esp32_hal_param)
     s_hal = u8g2_esp32_hal_param;
 }
 
-/* ── Public: recreate bus + device after WiFi peripheral reset ──────────────
- *
- * Called by display_reinit_i2c() after i_sensors_init() has re-installed
- * the I2C driver.  The SSD1306 panel retains GDDRAM and power state —
- * only the ESP32-side handles need rebuilding.
- */
-esp_err_t u8g2_esp32_hal_reinit_bus(void)
+/* ── Public: HAL reinit after WiFi resets I2C peripheral ───────────────────*/
+esp_err_t u8g2_esp32_hal_reinit_bus(i2c_master_bus_handle_t new_bus)
 {
     if (s_hal.sda == U8G2_ESP32_HAL_UNDEFINED ||
         s_hal.scl == U8G2_ESP32_HAL_UNDEFINED) {
-        ESP_LOGE(TAG, "reinit_bus: HAL not initialised yet");
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Tear down existing handles if present. */
+    /* Tear down old device only — the bus is owned by i_sensors.c */
     if (s_i2c_dev) {
         i2c_master_bus_rm_device(s_i2c_dev);
         s_i2c_dev = NULL;
     }
-    if (s_i2c_bus) {
-        i2c_del_master_bus(s_i2c_bus);
-        s_i2c_bus = NULL;
-    }
 
-    esp_err_t err = i2c_bus_create();
+    s_i2c_bus = new_bus;   /* Use the owner's fresh bus */
+
+    esp_err_t err = i2c_dev_add(s_i2c_addr7);
     if (err != ESP_OK) return err;
 
-    /* Use the 7-bit address we stored during BYTE_INIT.
-     * This avoids needing a u8x8_t* instance in reinit. */
-    err = i2c_dev_add(s_i2c_addr7);
-    if (err != ESP_OK) return err;
-
-    ESP_LOGI(TAG, "I2C bus + device handles recreated (port=%d, addr=0x%02X, speed=%luHz)",
-             (int)s_hal.i2c_port, s_i2c_addr7, (unsigned long)s_hal.i2c_clk_speed);
+    ESP_LOGI(TAG, "I2C device re-attached (addr=0x%02X)", s_i2c_addr7);
     return ESP_OK;
 }
 
@@ -191,32 +177,19 @@ uint8_t u8g2_esp32_i2c_byte_cb(u8x8_t *u8x8,
     switch (msg) {
 
     case U8X8_MSG_BYTE_INIT: {
-        /* Called once by u8g2_InitDisplay(). Creates bus + device handles. */
         if (s_hal.sda == U8G2_ESP32_HAL_UNDEFINED ||
             s_hal.scl == U8G2_ESP32_HAL_UNDEFINED) {
-            ESP_LOGE(TAG, "BYTE_INIT: SDA/SCL pins not set");
             break;
         }
 
-        /* If handles already exist (e.g. display_reinit_i2c was called first),
-         * skip creation — the bus is already up. */
-        if (s_i2c_bus && s_i2c_dev) {
-            ESP_LOGD(TAG, "BYTE_INIT: bus already initialised, skipping");
-            break;
+        /* Boot path: bus doesn't exist yet, create it. */
+        if (!s_i2c_bus) {
+            i2c_bus_create();   // Existing internal helper
         }
 
-        esp_err_t err = i2c_bus_create();
-        if (err != ESP_OK) break;
-
-        /* u8x8_GetI2CAddress returns the 8-bit address (already left-shifted).
-         * The new API wants the 7-bit address. */
-        uint8_t addr8  = u8x8_GetI2CAddress(u8x8);
-        uint8_t addr7  = addr8 >> 1;
-        err = i2c_dev_add(addr7);
-        if (err != ESP_OK) {
-            i2c_del_master_bus(s_i2c_bus);
-            s_i2c_bus = NULL;
-        }
+        uint8_t addr7 = u8x8_GetI2CAddress(u8x8) >> 1;
+        i2c_dev_add(addr7);
+        s_i2c_addr7 = addr7;   // Store for reinit
         break;
     }
 

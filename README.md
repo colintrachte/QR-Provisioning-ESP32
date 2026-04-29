@@ -4,7 +4,7 @@ Inspired by [Meshtastic](https://meshtastic.org/) — but built for robotics, no
 
 **No cloud required. No subscriptions.** Optional cloud integrations are fine as add-ons.
 
-WiFi provisioning and RC control firmware for **Heltec WiFi LoRa 32 V3** (ESP32-S3). Also targeting TTGO LoRa32 V1 and Wemos D1 Mini (ESP8266/Arduino).
+WiFi provisioning and RC control firmware for [**Heltec WiFi LoRa 32 V3**](https://heltec.org/project/wifi-lora-32-v3/) (ESP32-S3). Also targeting TTGO LoRa32 V1 and Wemos D1 Mini (ESP8266/Arduino).
 
 > **No Espressif provisioning app required**
 > Connect via browser on any phone or PC.
@@ -334,9 +334,9 @@ Served on port 80 after STA connects.
 
 ## Open Work / Roadmap
 
-&gt; **Value:** 🔴 High — prevents bricks, reduces support, or unlocks new use cases  
-&gt; **Value:** 🔵 Medium — improves UX or expands capabilities  
-&gt; **Value:** 🟢 Low — nice to have, polish, or future-proofing  
+&gt; **Value:** 🔴 High — prevents bricks, reduces support, or unlocks new use cases
+&gt; **Value:** 🔵 Medium — improves UX or expands capabilities
+&gt; **Value:** 🟢 Low — nice to have, polish, or future-proofing
 &gt; **Effort:** S = hours, M = days, L = weeks
 
 ---

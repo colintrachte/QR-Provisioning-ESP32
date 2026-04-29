@@ -16,32 +16,44 @@
 #define DISP_WIDTH      128
 #define DISP_HEIGHT     64
 
-/* ── LED (onboard white, active HIGH) ───────────────────────────────────────*/
+/* ── LED (onboard white, active HIGH) ───────────────────────────────────────
+ * GPIO35 = "LED Write Ctrl" per Heltec V3 datasheet. Active-high.
+ * Driven via LEDC for PWM brightness control.
+ */
 #define LED_GPIO            35
 #define LED_LEDC_CHANNEL    LEDC_CHANNEL_0
 #define LED_LEDC_TIMER      LEDC_TIMER_0
-#define LED_LEDC_RESOLUTION LEDC_TIMER_8_BIT
-#define LED_LEDC_FREQ_HZ    1000
+#define LED_LEDC_RESOLUTION LEDC_TIMER_8_BIT   /* 256 steps                 */
+#define LED_LEDC_FREQ_HZ    5000               /* above audible, smooth PWM */
 
-/* ── Battery ADC (direct voltage divider on GPIO1) ──────────────────────────*/
+/* ── Battery ADC (voltage divider on GPIO1) ─────────────────────────────────
+ * GPIO1 = ADC1_CH0. Divider: VBAT = VADC × (100 + 390) / 100 → factor 4.9
+ */
 #define BATTERY_ADC_UNIT     ADC_UNIT_1
-#define BATTERY_ADC_CHANNEL  ADC_CHANNEL_0  /* GPIO1 */
-#define BATTERY_R_TOP        100            /* kΩ — top of divider */
-#define BATTERY_R_BOT        100            /* kΩ — bottom of divider */
+#define BATTERY_ADC_CHANNEL  ADC_CHANNEL_0  /* GPIO1 = ADC1_CH0             */
+#define BATTERY_R_TOP        390            /* kΩ — top of divider          */
+#define BATTERY_R_BOT        100            /* kΩ — bottom of divider       */
 #define BATTERY_V_FULL_MV    4200
-#define BATTERY_V_EMPTY_MV   3300
+#define BATTERY_V_EMPTY_MV   3300           /* LiPo safe cutoff             */
 #define I_BATTERY_SAMPLES    8
 
-/* ── Re-provision button ────────────────────────────────────────────────────*/
-#define REPROV_GPIO     0    /* USER / FLASH button, active LOW */
+/* ── Re-provision button ────────────────────────────────────────────────────
+ * GPIO0 = BOOT/USER_SW. Active-low with internal pull-up.
+ */
+#define REPROV_GPIO     0
 #define REPROV_HOLD_MS  3000
 
-/* ── Motor LEDC (shared timer, separate from LED timer) ─────────────────────*/
+/* ── Motor LEDC (separate timer from LED) ───────────────────────────────────
+ * Channels 1 and 2 reserved for motors; channel 0 is the LED.
+ * 20 kHz: above audible range, suitable for most motor drivers.
+ * WARNING: GPIO33–38 are SubSPI/Flash lines on this board. Do not reassign.
+ */
 #define MOTOR_LEDC_TIMER      LEDC_TIMER_1
-#define MOTOR_LEDC_RESOLUTION LEDC_TIMER_10_BIT
+#define MOTOR_LEDC_RESOLUTION LEDC_TIMER_10_BIT   /* 1024 steps             */
 #define MOTOR_LEDC_FREQ_HZ    20000
 #define MOTOR_L_LEDC_CHANNEL  LEDC_CHANNEL_1
 #define MOTOR_R_LEDC_CHANNEL  LEDC_CHANNEL_2
 
 /* ── Board identity ─────────────────────────────────────────────────────────*/
-#define BOARD_NAME  "Heltec WiFi LoRa 32 V3"
+#define BOARD_NAME             "Heltec WiFi LoRa 32 V3"
+#define I2C_POST_WIFI_DELAY_MS 100
