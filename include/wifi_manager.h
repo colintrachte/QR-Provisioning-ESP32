@@ -56,24 +56,34 @@ typedef enum {
 typedef void (*wifi_manager_state_cb_t)(wifi_manager_state_t state, void *ctx);
 typedef void (*wifi_manager_connected_cb_t)(const char *ssid, const char *ip, void *ctx);
 
+/**
+ * on_radio_reset: Called from mgr_task (WiFi manager task) after
+ * esp_wifi_set_mode() during AP reset. Executes on the same task
+ * as the WiFi state machine. Keep this handler fast — it blocks
+ * mgr_task while running. I2C reinit (~1ms) is acceptable; avoid
+ * anything that could block for meaningful time (flash writes,
+ * long delays, waiting on other tasks).
+ */
 typedef struct {
     const char *ap_ssid;
     const char *ap_password;
-    uint8_t     ap_channel;      /* 0 → default 1                          */
+    uint8_t     ap_channel;
     int         sta_max_retries;
-    wifi_manager_state_cb_t     on_state_change;
-    wifi_manager_connected_cb_t on_connected;
-    void                       *cb_ctx;
+    void       *cb_ctx;
+    void      (*on_state_change)(wifi_manager_state_t state, void *ctx);
+    void      (*on_connected)(const char *ssid, const char *ip, void *ctx);
+    void      (*on_radio_reset)(void *ctx);   // ← add here
 } wifi_manager_config_t;
 
 #define WIFI_MANAGER_CONFIG_DEFAULT() { \
-    .ap_ssid         = "ESP32-Setup",  \
-    .ap_password     = "setup1234",    \
-    .ap_channel      = 1,              \
-    .sta_max_retries = 5,              \
-    .on_state_change = NULL,           \
-    .on_connected    = NULL,           \
-    .cb_ctx          = NULL,           \
+    .ap_ssid        = NULL,             \
+    .ap_password    = NULL,             \
+    .ap_channel     = 1,                \
+    .sta_max_retries = 3,               \
+    .cb_ctx         = NULL,             \
+    .on_state_change = NULL,            \
+    .on_connected    = NULL,            \
+    .on_radio_reset  = NULL,            \
 }
 
 /**

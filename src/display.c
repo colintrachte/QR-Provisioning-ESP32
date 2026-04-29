@@ -166,9 +166,16 @@ esp_err_t display_reinit_i2c(i2c_master_bus_handle_t new_bus)
         return err;
     }
 
-    u8g2_InitDisplay(&s_u8g2);
-    u8g2_SetPowerSave(&s_u8g2, 0);
+    // DO NOT call u8g2_InitDisplay() here — it sends the full SSD1306
+    // init sequence which clears GDDRAM and blanks the panel.
+    // The controller stayed powered through the WiFi disruption;
+    // only the ESP32-side bus handles were stale. The HAL reinit
+    // above replaced them. A flush will work immediately.
+
+    // Only restore font position setting (no hardware command):
     u8g2_SetFontPosTop(&s_u8g2);
+    s_available = true;          /* reinit succeeded — display is reachable */
+    display_flush_force();   /* push current buffer to freshly reinited controller */
 
     ESP_LOGI(TAG, "I2C HAL re-initialised after WiFi startup");
     return ESP_OK;
@@ -331,6 +338,7 @@ void display_draw_qr(int x, int y, int scale, const uint8_t *qrcode)
 void display_flush(void)
 {
     DISPLAY_GUARD();
+    if (!s_dirty) return;          /* skip if nothing changed */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     u8g2_SendBuffer(&s_u8g2);
     s_dirty = false;
@@ -339,7 +347,7 @@ void display_flush(void)
 
 void display_flush_force(void)
 {
-    DISPLAY_GUARD();
+    DISPLAY_GUARD();               /* always sends, ignores dirty flag */
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     u8g2_SendBuffer(&s_u8g2);
     s_dirty = false;

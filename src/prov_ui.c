@@ -57,15 +57,16 @@ static int     s_ws_clients     = 0;   /* set by prov_ui_set_client_count()  */
  */
 #define QR_X          0
 #define QR_Y          0
-#define TEXT_X       62   /* right column for AP/setup screens               */
+#define TEXT_X       62
 #define STATUS_CLR_Y 54
 #define STATUS_TEXT_Y 56
-
-/* Scale 1 is unreadable on most phone cameras. Fixed at 2. */
 #define QR_SCALE      2
-
-/* Height of the IP address row on the connected (index) screen. */
 #define IP_ROW_H     12
+
+/* Y positions for the connected-client screen */
+#define CONN_LABEL_Y   0
+#define CONN_IP_Y     16
+#define CONN_SSID_Y   36
 
 /* ── Internal renderers ─────────────────────────────────────────────────────*/
 
@@ -174,9 +175,9 @@ static void render_connected(void)
 
     if (s_ws_clients > 0)
     {
-        display_draw_text(0,  0, "Connected:",  DISP_FONT_NORMAL);
-        display_draw_text(0, 16, s_ip,          DISP_FONT_MEDIUM);
-        display_draw_text(0, 36, s_ssid,        DISP_FONT_SMALL);
+        display_draw_text(0, CONN_LABEL_Y, "Connected:",  DISP_FONT_NORMAL);
+        display_draw_text(0, CONN_IP_Y,    s_ip,          DISP_FONT_MEDIUM);
+        display_draw_text(0, CONN_SSID_Y,  s_ssid,        DISP_FONT_SMALL);
     }
     else
     {

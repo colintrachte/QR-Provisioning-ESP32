@@ -141,6 +141,13 @@ static void app_task(void *arg)
     }
 }
 
+static void on_radio_reset(void *ctx)
+{
+    (void)ctx;
+    i2c_master_bus_handle_t bus = i_sensors_get_bus();
+    if (bus) display_reinit_i2c(bus);
+}
+
 /* ── Entry point ────────────────────────────────────────────────────────────*/
 
 void app_main(void)
@@ -197,9 +204,10 @@ void app_main(void)
     wifi_manager_config_t cfg = WIFI_MANAGER_CONFIG_DEFAULT();
     cfg.ap_ssid         = AP_SSID;
     cfg.ap_password     = AP_PASSWORD;
-    cfg.sta_max_retries = 5;
+    cfg.sta_max_retries = 3;
     cfg.on_state_change = prov_ui_on_state_change;
     cfg.on_connected    = prov_ui_on_connected;
+    cfg.on_radio_reset = on_radio_reset;
 
     o_led_blink(LED_PATTERN_FAST_BLINK);  /* "connecting" indicator */
 
@@ -226,9 +234,12 @@ void app_main(void)
     i_sensors_init();
     i2c_master_bus_handle_t bus = i_sensors_get_bus();
     if (bus) {
-        display_reinit_i2c(bus);
+        esp_err_t err = display_reinit_i2c(bus);
+        /* reinit_i2c now sets s_available internally based on success/fail */
+        display_set_available(err == ESP_OK);
+    } else {
+        display_set_available(false);
     }
-    display_set_available(i_sensors_get_peripheral_map()->oled);
     /* 9. Motor driver. */
     ctrl_drive_init();
 

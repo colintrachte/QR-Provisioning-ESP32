@@ -75,7 +75,7 @@ typedef struct {
 void u8g2_esp32_hal_init(u8g2_esp32_hal_t u8g2_esp32_hal_param);
 
 i2c_master_bus_handle_t u8g2_esp32_hal_get_bus(void);
-
+void u8g2_esp32_hal_release_bus(void);
 /**
  * Tear down and recreate the I2C master bus + device handles.
  *

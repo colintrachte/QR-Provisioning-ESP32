@@ -91,7 +91,18 @@ void u8g2_esp32_hal_init(u8g2_esp32_hal_t u8g2_esp32_hal_param)
 {
     s_hal = u8g2_esp32_hal_param;
 }
-
+void u8g2_esp32_hal_release_bus(void)
+{
+    if (s_i2c_dev) {
+        i2c_master_bus_rm_device(s_i2c_dev);
+        s_i2c_dev = NULL;
+    }
+    if (s_i2c_bus) {
+        i2c_del_master_bus(s_i2c_bus);
+        s_i2c_bus = NULL;
+    }
+    ESP_LOGI(TAG, "HAL bus released for handoff to i_sensors");
+}
 /* ── Public: HAL reinit after WiFi resets I2C peripheral ───────────────────*/
 esp_err_t u8g2_esp32_hal_reinit_bus(i2c_master_bus_handle_t new_bus)
 {
@@ -100,13 +111,18 @@ esp_err_t u8g2_esp32_hal_reinit_bus(i2c_master_bus_handle_t new_bus)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Tear down old device only — the bus is owned by i_sensors.c */
     if (s_i2c_dev) {
         i2c_master_bus_rm_device(s_i2c_dev);
         s_i2c_dev = NULL;
     }
 
-    s_i2c_bus = new_bus;   /* Use the owner's fresh bus */
+    // If the HAL created its own temporary bus at boot, delete it now.
+    // Ownership transfers to i_sensors permanently after this point.
+    if (s_i2c_bus && s_i2c_bus != new_bus) {
+        i2c_del_master_bus(s_i2c_bus);
+    }
+
+    s_i2c_bus = new_bus;
 
     esp_err_t err = i2c_dev_add(s_i2c_addr7);
     if (err != ESP_OK) return err;
@@ -182,14 +198,21 @@ uint8_t u8g2_esp32_i2c_byte_cb(u8x8_t *u8x8,
             break;
         }
 
-        /* Boot path: bus doesn't exist yet, create it. */
+        // Do NOT call i2c_bus_create() here. At boot, display_init() runs
+        // before i_sensors_init(), so there's no shared bus yet. We create
+        // a temporary owned bus only if no external bus has been injected.
+        // After i_sensors_init() runs, u8g2_esp32_hal_reinit_bus() will
+        // replace it with the shared handle.
         if (!s_i2c_bus) {
-            i2c_bus_create();   // Existing internal helper
+            i2c_bus_create();  // temporary; will be replaced by reinit_bus()
         }
 
         uint8_t addr7 = u8x8_GetI2CAddress(u8x8) >> 1;
-        i2c_dev_add(addr7);
-        s_i2c_addr7 = addr7;   // Store for reinit
+        s_i2c_addr7 = addr7;
+
+        if (!s_i2c_dev) {
+            i2c_dev_add(addr7);
+        }
         break;
     }
 

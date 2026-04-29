@@ -53,11 +53,16 @@ static const char *TAG = "wifi_mgr";
 #define EVT_STA_FAILED    BIT1
 
 #define STA_CONNECT_TIMEOUT_MS 10000
+typedef enum {
+    MGR_AP_IDLE,
+    MGR_AP_ACTIVE,
+    MGR_AP_SHUTTING_DOWN,
+} mgr_ap_state_t;
 
+static volatile mgr_ap_state_t s_ap_state = MGR_AP_IDLE;
 static wifi_manager_config_t  s_cfg;
 static EventGroupHandle_t     s_sta_evt_grp = NULL;
 static bool                   s_connected   = false;
-static volatile bool          s_ap_shutting_down = false;  /* suppress AP events during intentional shutdown */
 static char                   s_ip[16]      = {0};
 static char                   s_sta_ssid[33] = {0};
 static volatile int           s_retry_count  = 0;
@@ -79,15 +84,35 @@ static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 static void nvs_save(const char *ssid, const char *pass)
 {
     nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed — credentials not saved");
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed (%s) — credentials not saved",
+                 esp_err_to_name(err));
         return;
     }
-    nvs_set_str(nvs, NVS_KEY_SSID, ssid);
-    nvs_set_str(nvs, NVS_KEY_PASS, pass);
-    nvs_commit(nvs);
+
+    err = nvs_set_str(nvs, NVS_KEY_SSID, ssid);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_str(ssid) failed: %s", esp_err_to_name(err));
+        nvs_close(nvs);
+        return;
+    }
+
+    err = nvs_set_str(nvs, NVS_KEY_PASS, pass);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_str(pass) failed: %s", esp_err_to_name(err));
+        nvs_close(nvs);
+        return;
+    }
+
+    err = nvs_commit(nvs);
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "nvs_commit failed: %s — credentials may not persist",
+                 esp_err_to_name(err));
+    else
+        ESP_LOGI(TAG, "Credentials saved to NVS (SSID=%s)", ssid);
+
     nvs_close(nvs);
-    ESP_LOGI(TAG, "Credentials saved to NVS (SSID=%s)", ssid);
 }
 
 static void fire_state(wifi_manager_state_t state)
@@ -128,9 +153,8 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             fire_state(WIFI_MANAGER_STATE_CLIENT_CONNECTED);
             break;
         case WIFI_EVENT_AP_STADISCONNECTED:
-            if (s_ap_shutting_down) {
-                /* AP is being shut down intentionally — ignore client disconnects */
-                break;
+            if (s_ap_state == MGR_AP_SHUTTING_DOWN) {
+                break;  /* intentional shutdown — ignore */
             }
             ESP_LOGI(TAG, "AP: client left");
             fire_state(WIFI_MANAGER_STATE_CLIENT_DISCONNECTED);
@@ -162,7 +186,7 @@ static void ap_configure(void)
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
 
-    esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    s_ap_state = MGR_AP_ACTIVE;
     ESP_LOGI(TAG, "SoftAP configured: SSID=%s ch=%d",
              s_cfg.ap_ssid, ap_cfg.ap.channel);
 }
@@ -201,72 +225,65 @@ static bool sta_connect(const char *ssid, const char *pass)
 static void reset_wifi_for_ap(void)
 {
     ESP_LOGI(TAG, "Resetting WiFi for AP mode");
+    s_ap_state = MGR_AP_SHUTTING_DOWN;
     esp_wifi_disconnect();
     esp_wifi_set_mode(WIFI_MODE_NULL);
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    s_ap_state = MGR_AP_IDLE;
+
+    if (s_cfg.on_radio_reset)
+        s_cfg.on_radio_reset(s_cfg.cb_ctx);
+}
+
+static void on_sta_connected(void)
+{
+    fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
+    fire_connected();
+
+    app_server_start();
+
+#if MDNS_ENABLE
+    if (mdns_init() == ESP_OK) {
+        mdns_hostname_set(MDNS_HOSTNAME);
+        mdns_instance_name_set("MuleBot Robot");
+        ESP_LOGI(TAG, "mDNS: %s.local", MDNS_HOSTNAME);
+    }
+#endif
 }
 
 static void mgr_task(void *arg)
 {
     (void)arg;
-
     char ssid[33] = {0};
     char pass[65] = {0};
 
-    /* ── Try stored credentials ────────────────────────────────────────────*/
     if (nvs_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
         fire_state(WIFI_MANAGER_STATE_CONNECTING_SAVED);
-
         if (sta_connect(ssid, pass)) {
-            fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
-            fire_connected();
-
-            app_server_start();
-#if MDNS_ENABLE
-            if (mdns_init() == ESP_OK) {
-                mdns_hostname_set(MDNS_HOSTNAME);
-                mdns_instance_name_set("MuleBot Robot");
-                ESP_LOGI(TAG, "mDNS: %s.local", MDNS_HOSTNAME);
-            }
-#endif
+            on_sta_connected();
             vTaskDelete(NULL);
             return;
         }
-
         ESP_LOGW(TAG, "Saved credentials failed — falling back to portal");
     }
 
-    /* ── Portal loop: repeat until STA connects ────────────────────────────*/
     reset_wifi_for_ap();
     ap_configure();
     fire_state(WIFI_MANAGER_STATE_AP_STARTED);
 
     while (1) {
         portal_start(s_cfg.ap_ssid);
-
         portal_stop();
         portal_get_credentials(ssid, pass);
         fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
 
         vTaskDelay(pdMS_TO_TICKS(300));
-
         fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
 
         if (sta_connect(ssid, pass)) {
             nvs_save(ssid, pass);
-
-            fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
-            fire_connected();
-
-            app_server_start();
-#if MDNS_ENABLE
-            if (mdns_init() == ESP_OK) {
-                mdns_hostname_set(MDNS_HOSTNAME);
-                mdns_instance_name_set("MuleBot Robot");
-                ESP_LOGI(TAG, "mDNS: %s.local", MDNS_HOSTNAME);
-            }
-#endif
+            on_sta_connected();
             vTaskDelete(NULL);
             return;
         }
