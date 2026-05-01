@@ -33,6 +33,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "driver/i2c_master.h"
+#include "esp_err.h"
 
 /* ── Peripheral presence map ────────────────────────────────────────────────
  * Populated by i_sensors_init(). Read-only after init.

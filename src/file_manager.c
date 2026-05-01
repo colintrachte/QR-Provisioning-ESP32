@@ -1,16 +1,22 @@
-/**
- * vfs_mount.c — Shared LittleFS mount helper.
+#include "file_manager.h"
+#include "cJSON.h"
+#include "esp_littlefs.h"
+#include "esp_log.h"
+static const char *TAG = "file_manager";
+/*
+ * file_manager should own:
+ * - file system initialization
+ * - file read/write APIs
+ * - file existence checks
+ * - file deletion
+ * - directory listing (if needed)
  *
+ * It should abstract away the underlying file system (e.g., LittleFS) and provide a simple interface for the rest of the application.
+
  * Both portal.c and app_server.c need LittleFS mounted.
  * This module ensures the mount happens exactly once and is robust
  * against ESP_ERR_INVALID_STATE (already mounted).
  */
-
-#include "vfs_mount.h"
-#include "esp_littlefs.h"
-#include "esp_log.h"
-
-static const char *TAG = "vfs_mount";
 
 static bool s_mounted = false;
 

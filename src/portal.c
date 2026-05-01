@@ -12,7 +12,8 @@
 
 #include "portal.h"
 #include "config.h"
-#include "vfs_mount.h"
+#include "file_manager.h"
+#include "web_utils.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,68 +33,6 @@
 static const char *TAG = "portal";
 
 #define FS_BASE       "/littlefs"
-#define SERVE_CHUNK   8192
-
-/* ── File serving helper ───────────────────────────────────────────────────*/
-static esp_err_t serve_file(httpd_req_t *req, const char *path,
-                             const char *mime, bool is_asset)
-{
-    char gz_path[128];
-    bool use_gz = false;
-    FILE *f = NULL;
-
-    if (strlen(path) < sizeof(gz_path) - 4) {
-        snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
-        f = fopen(gz_path, "rb");
-        if (f) use_gz = true;
-    }
-
-    if (!f) {
-        f = fopen(path, "rb");
-        if (!f) {
-            ESP_LOGE(TAG, "serve: not found: %s  (run pio run -t uploadfs)", path);
-            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-            return ESP_OK;
-        }
-    }
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    rewind(f);
-
-    httpd_resp_set_type(req, mime);
-    httpd_resp_set_hdr(req, "Cache-Control",
-                       is_asset ? "public, max-age=3600" : "no-cache");
-
-    if (use_gz)
-        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-
-// Use a single send for files small enough for the buffer
-    if (file_size <= SERVE_CHUNK)
-    {
-        char *buf = malloc(file_size);
-        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-        fread(buf, 1, file_size, f);
-        // httpd_resp_send automatically sets Content-Length and avoids chunking
-        httpd_resp_send(req, buf, file_size);
-        free(buf);
-    }
-    else
-    {
-        // Fallback to chunked only for very large files, removing manual Content-Length
-        char *buf = malloc(SERVE_CHUNK);
-        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-        size_t n;
-        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
-            httpd_resp_send_chunk(req, buf, (ssize_t)n);
-        httpd_resp_send_chunk(req, NULL, 0);
-        free(buf);
-    }
-    fclose(f);
-    return ESP_OK;
-}
 
 /* ── Credentials ───────────────────────────────────────────────────────────*/
 static char s_ssid[33] = {0};
@@ -260,19 +199,19 @@ static void stop_dns(void)
 /* ── httpd handlers ────────────────────────────────────────────────────────*/
 
 static esp_err_t handle_root(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/setup.html", "text/html", false); }
+    { return web_serve_file(req, FS_BASE "/setup.html", "text/html", false); }
 
 static esp_err_t handle_favicon(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/favicon.svg", "image/svg+xml", true); }
+    { return web_serve_file(req, FS_BASE "/favicon.svg", "image/svg+xml", true); }
 
 static esp_err_t handle_base_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/base.css",   "text/css",       true); }
+    { return web_serve_file(req, FS_BASE "/base.css",   "text/css",       true); }
 
 static esp_err_t handle_setup_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/setup.css",  "text/css",       true); }
+    { return web_serve_file(req, FS_BASE "/setup.css",  "text/css",       true); }
 
 static esp_err_t handle_setup_js(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/setup.js",  "application/javascript", true); }
+    { return web_serve_file(req, FS_BASE "/setup.js",  "application/javascript", true); }
 
 /* ── Captive-portal probe handler ─────────────────────────────────────────
  *
@@ -451,25 +390,6 @@ static esp_err_t handle_rescan(httpd_req_t *req)
     return handle_scan(req);
 }
 
-/* ── URL decode ────────────────────────────────────────────────────────────*/
-static void url_decode(const char *src, char *dst, int dst_size)
-{
-    int out = 0;
-    while (*src && out < dst_size - 1) {
-        if (src[0] == '%' && src[1] && src[2]) {
-            char hex[3] = { src[1], src[2], '\0' };
-            dst[out++] = (char)strtol(hex, NULL, 16);
-            src += 3;
-        } else if (src[0] == '+') {
-            dst[out++] = ' ';
-            src++;
-        } else {
-            dst[out++] = *src++;
-        }
-    }
-    dst[out] = '\0';
-}
-
 static void extract_field(const char *body, const char *key,
                            char *out, int out_size)
 {
@@ -485,7 +405,7 @@ static void extract_field(const char *body, const char *key,
     if (!tmp) { out[0] = '\0'; return; }
     memcpy(tmp, p, len);
     tmp[len] = '\0';
-    url_decode(tmp, out, out_size);
+    web_url_decode(tmp, out, out_size);
     free(tmp);
 }
 

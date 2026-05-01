@@ -3,7 +3,7 @@
  *
  * File serving
  * ────────────
- * Explicit named routes call serve_file() with a literal path. Dynamic
+ * Explicit named routes call web_serve_file() with a literal path. Dynamic
  * URI→path concatenation is avoided because httpd URIs can be up to
  * CONFIG_HTTPD_MAX_URI_LEN (512 B) and would overflow any fixed stack buffer
  * when prepending "/littlefs". A wildcard catch-all returns 404 for
@@ -11,12 +11,13 @@
  */
 
 #include "app_server.h"
+#include "web_utils.h"
 #include "ctrl_drive.h"
 #include "o_led.h"
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
-#include "vfs_mount.h"
+#include "file_manager.h"
 #include "config.h"
 #include "nvs_keys.h"
 #include <dirent.h>
@@ -33,7 +34,6 @@
 static const char *TAG = "app_server";
 
 #define FS_BASE     "/littlefs"
-#define SERVE_CHUNK  8192
 
 /* POST /api/jserror — forward frontend exceptions to the serial log */
 static esp_err_t handle_api_jserror(httpd_req_t *req)
@@ -49,119 +49,30 @@ static esp_err_t handle_api_jserror(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* serve_file — gzip-transparent static file server.
- *
- * Gzip strategy (build-time compression, zero runtime CPU):
- *   Before running `pio run -t uploadfs`, compress each web asset:
- *     gzip -9 index.js index.css base.css index.html settings.{js,css,html}
- *           setup.{js,css,html} favicon.svg
- *   This produces index.js.gz, index.css.gz, etc. alongside the originals.
- *   Upload ALL files (both .gz and originals) to LittleFS.
- *
- *   On each request we first try to open path.gz. If it exists we serve it
- *   with Content-Encoding: gzip — the browser decompresses transparently.
- *   If it doesn't exist we serve the plain file unchanged.
- *
- *   This means:
- *   - No runtime decompression on the ESP32 (zero CPU cost)
- *   - No routing changes — URIs stay the same (/index.js, not /index.js.gz)
- *   - No change to OTA filesystem update — just include .gz files in the image
- *   - Falls back gracefully if .gz files are absent (e.g. first upload)
- *   - Browsers that don't support gzip (essentially none in 2024) get plain
- *
- * Content-Length: set from fseek/ftell (O(1) on LittleFS) so the browser
- * can reuse the TCP connection rather than waiting for server-close.
- *
- * is_asset: true → CSS/JS/SVG get Cache-Control: public, max-age=3600
- *           false → HTML gets no-cache so provisioning state is always fresh
- */
-static esp_err_t serve_file(httpd_req_t *req, const char *path,
-                             const char *mime, bool is_asset)
-{
-    /* Try gzip variant first — path is at most MAXPATH chars, +3 for ".gz" */
-    char gz_path[128];
-    bool use_gz = false;
-    FILE *f = NULL;
-
-    if (strlen(path) < sizeof(gz_path) - 4) {
-        snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
-        f = fopen(gz_path, "rb");
-        if (f) use_gz = true;
-    }
-
-    if (!f) {
-        f = fopen(path, "rb");
-        if (!f) {
-            ESP_LOGE(TAG, "serve: not found: %s", path);
-            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-            return ESP_OK;
-        }
-    }
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    rewind(f);
-
-    httpd_resp_set_type(req, mime);
-    httpd_resp_set_hdr(req, "Cache-Control",
-                       is_asset ? "public, max-age=3600" : "no-cache");
-
-    if (use_gz)
-        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-
-// Use a single send for files small enough for the buffer
-    if (file_size <= SERVE_CHUNK)
-    {
-        char *buf = malloc(file_size);
-        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-        fread(buf, 1, file_size, f);
-        // httpd_resp_send automatically sets Content-Length and avoids chunking
-        httpd_resp_send(req, buf, file_size);
-        free(buf);
-    }
-    else
-    {
-        // Fallback to chunked only for very large files, removing manual Content-Length
-        char *buf = malloc(SERVE_CHUNK);
-        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-        size_t n;
-        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
-            httpd_resp_send_chunk(req, buf, (ssize_t)n);
-        httpd_resp_send_chunk(req, NULL, 0);
-        free(buf);
-    }
-    fclose(f);
-
-    ESP_LOGI(TAG, "serve %s [%s, %ld B]", path, use_gz ? "gz" : "plain", file_size);
-    return ESP_OK;
-}
-
 /* ── File route handlers ───────────────────────────────────────────────────*/
 static esp_err_t handle_index(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/index.html",    "text/html",             false); }
+    { return web_serve_file(req, FS_BASE "/index.html",    "text/html",             false); }
 
 static esp_err_t handle_base_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/base.css",      "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/base.css",      "text/css",              true); }
 
 static esp_err_t handle_index_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/index.css",     "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/index.css",     "text/css",              true); }
 
 static esp_err_t handle_index_js(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/index.js",      "application/javascript", true); }
+    { return web_serve_file(req, FS_BASE "/index.js",      "application/javascript", true); }
 
 static esp_err_t handle_settings(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/settings.html", "text/html",             false); }
+    { return web_serve_file(req, FS_BASE "/settings.html", "text/html",             false); }
 
 static esp_err_t handle_settings_css(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/settings.css",  "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/settings.css",  "text/css",              true); }
 
 static esp_err_t handle_settings_js(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/settings.js",   "application/javascript", true); }
+    { return web_serve_file(req, FS_BASE "/settings.js",   "application/javascript", true); }
 
 static esp_err_t handle_favicon(httpd_req_t *req)
-    { return serve_file(req, FS_BASE "/favicon.svg",   "image/svg+xml",         true); }
+    { return web_serve_file(req, FS_BASE "/favicon.svg",   "image/svg+xml",         true); }
 
 static esp_err_t handle_404(httpd_req_t *req)
 {
@@ -350,12 +261,19 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
     buf[pos++] = '[';
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
     for (int i = 0; i < s_scan_count; i++) {
-        pos += snprintf(buf + pos, MAX_SCAN_APS * 100 - pos,
+        int remaining = MAX_SCAN_APS * 100 - pos;
+        if (remaining <= 0) break;
+        int written = snprintf(buf + pos, remaining,
             "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
             i ? "," : "",
             s_scan_aps[i].ssid,
             s_scan_aps[i].quality,
             s_scan_aps[i].secure ? "true" : "false");
+        if (written >= remaining) {
+            pos = MAX_SCAN_APS * 100 - 1;
+            break;
+        }
+        pos += written;
     }
     xSemaphoreGive(s_scan_mutex);
     buf[pos++] = ']';
@@ -364,21 +282,6 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
     httpd_resp_sendstr(req, buf);
     free(buf);
     return ESP_OK;
-}
-
-/* POST /api/connect */
-static void url_decode(const char *src, char *dst, int dst_size)
-{
-    int out = 0;
-    while (*src && out < dst_size - 1) {
-        if (src[0] == '%' && src[1] && src[2]) {
-            char hex[3] = { src[1], src[2], '\0' };
-            dst[out++] = (char)strtol(hex, NULL, 16);
-            src += 3;
-        } else if (src[0] == '+') { dst[out++] = ' '; src++; }
-        else { dst[out++] = *src++; }
-    }
-    dst[out] = '\0';
 }
 
 static esp_err_t handle_api_connect(httpd_req_t *req)
@@ -408,8 +311,8 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
         if (len >= (int)sizeof(pass_enc)) len = sizeof(pass_enc) - 1;
         memcpy(pass_enc, p, len);
     }
-    url_decode(ssid_enc, ssid, sizeof(ssid));
-    url_decode(pass_enc, pass, sizeof(pass));
+    web_url_decode(ssid_enc, ssid, sizeof(ssid));
+    web_url_decode(pass_enc, pass, sizeof(pass));
 
     if (!ssid[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required"); return ESP_OK; }
 
