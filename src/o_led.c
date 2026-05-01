@@ -33,7 +33,7 @@ static TimerHandle_t          s_timer       = NULL;
 static volatile led_pattern_t s_pattern     = LED_PATTERN_OFF;
 static volatile int           s_step        = 0;
 
-#define DUTY_MAX  ((1u << 8) - 1u)   /* 255 for 8-bit resolution */
+#define LED_DUTY_MAX  ((1u << 8) - 1u)   /* 255 for 8-bit resolution */
 
 static void set_duty(uint32_t duty)
 {
@@ -55,35 +55,35 @@ static void pattern_tick(TimerHandle_t xTimer)
         return;
 
     case LED_PATTERN_ON:
-        set_duty(DUTY_MAX);
+        set_duty(LED_DUTY_MAX);
         return;
 
     case LED_PATTERN_SLOW_BLINK:
         /* 1 Hz: 10 ticks on, 10 ticks off */
-        set_duty(step < 10 ? DUTY_MAX : 0);
+        set_duty(step < 10 ? LED_DUTY_MAX : 0);
         s_step = (step + 1) % 20;
         return;
 
     case LED_PATTERN_FAST_BLINK:
         /* 5 Hz: 2 ticks on, 2 ticks off */
-        set_duty(step < 2 ? DUTY_MAX : 0);
+        set_duty(step < 2 ? LED_DUTY_MAX : 0);
         s_step = (step + 1) % 4;
         return;
 
     case LED_PATTERN_DOUBLE_BLINK:
         /* on, off, on, off, then dark — 20 tick cycle */
-        if      (step < 2)  set_duty(DUTY_MAX);
+        if      (step < 2)  set_duty(LED_DUTY_MAX);
         else if (step < 4)  set_duty(0);
-        else if (step < 6)  set_duty(DUTY_MAX);
+        else if (step < 6)  set_duty(LED_DUTY_MAX);
         else                set_duty(0);
         s_step = (step + 1) % 20;
         return;
 
     case LED_PATTERN_HEARTBEAT:
         /* Long on, dim pulse, off — 20 tick cycle */
-        if      (step < 14) set_duty(DUTY_MAX);
+        if      (step < 14) set_duty(LED_DUTY_MAX);
         else if (step < 16) set_duty(0);
-        else if (step < 18) set_duty(DUTY_MAX / 3);
+        else if (step < 18) set_duty(LED_DUTY_MAX / 3);
         else                set_duty(0);
         s_step = (step + 1) % 20;
         return;
@@ -131,7 +131,9 @@ esp_err_t o_led_init(void)
              LED_GPIO, (unsigned)LED_LEDC_FREQ_HZ);
     return ESP_OK;
 }
-
+/*
+Why do we use a float for brightness when we could have used uint23_t from the start?
+*/
 void o_led_set(float brightness)
 {
     if (!s_initialized) return;
@@ -140,7 +142,7 @@ void o_led_set(float brightness)
     /* Reset step before setting pattern=OFF so timer never sees a stale step */
     s_step    = 0;
     s_pattern = LED_PATTERN_OFF;
-    set_duty((uint32_t)(brightness * DUTY_MAX));
+    set_duty((uint32_t)(brightness * LED_DUTY_MAX));
 }
 
 void o_led_blink(led_pattern_t pattern)

@@ -18,6 +18,7 @@
 #include "ota_server.h"
 #include "vfs_mount.h"
 #include "config.h"
+#include "nvs_keys.h"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -108,21 +109,29 @@ static esp_err_t serve_file(httpd_req_t *req, const char *path,
     if (use_gz)
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
 
-    if (file_size > 0) {
-        char len_str[16];
-        snprintf(len_str, sizeof(len_str), "%ld", file_size);
-        httpd_resp_set_hdr(req, "Content-Length", len_str);
+// Use a single send for files small enough for the buffer
+    if (file_size <= SERVE_CHUNK)
+    {
+        char *buf = malloc(file_size);
+        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
+
+        fread(buf, 1, file_size, f);
+        // httpd_resp_send automatically sets Content-Length and avoids chunking
+        httpd_resp_send(req, buf, file_size);
+        free(buf);
     }
+    else
+    {
+        // Fallback to chunked only for very large files, removing manual Content-Length
+        char *buf = malloc(SERVE_CHUNK);
+        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
 
-    char *buf = malloc(SERVE_CHUNK);
-    if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-    size_t n;
-    while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
-        httpd_resp_send_chunk(req, buf, (ssize_t)n);
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    free(buf);
+        size_t n;
+        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
+            httpd_resp_send_chunk(req, buf, (ssize_t)n);
+        httpd_resp_send_chunk(req, NULL, 0);
+        free(buf);
+    }
     fclose(f);
 
     ESP_LOGI(TAG, "serve %s [%s, %ld B]", path, use_gz ? "gz" : "plain", file_size);
@@ -166,9 +175,9 @@ static esp_err_t handle_404(httpd_req_t *req)
 #include "nvs_flash.h"
 #include "nvs.h"
 
-#define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
-#define SETTINGS_NVS_KEY_SSID   "ssid"
-#define SETTINGS_NVS_KEY_PASS   "pass"
+#define SETTINGS_NVS_NAMESPACE  NVS_NS_WIFI   /* defined in nvs_keys.h */
+#define SETTINGS_NVS_KEY_SSID   NVS_KEY_SSID
+#define SETTINGS_NVS_KEY_PASS   NVS_KEY_PASS
 
 #define MAX_SCAN_APS  20
 
@@ -389,8 +398,11 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
         if (len >= (int)sizeof(ssid_enc)) len = sizeof(ssid_enc) - 1;
         memcpy(ssid_enc, p, len);
     }
-    if ((p = strstr(body, "pass=")) != NULL) {
-        p += 5;
+    /* Field name is "password" — matches the portal form and settings.js.
+     * The previous "pass=" string caused silent empty-password saves because
+     * settings.js POSTs "password=..." (same field name as the portal). */
+    if ((p = strstr(body, "password=")) != NULL) {
+        p += 9;
         const char *e = strchr(p, '&');
         int len = e ? (int)(e - p) : (int)strlen(p);
         if (len >= (int)sizeof(pass_enc)) len = sizeof(pass_enc) - 1;

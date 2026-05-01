@@ -32,7 +32,7 @@
 static const char *TAG = "portal";
 
 #define FS_BASE       "/littlefs"
-#define SERVE_CHUNK   4096
+#define SERVE_CHUNK   8192
 
 /* ── File serving helper ───────────────────────────────────────────────────*/
 static esp_err_t serve_file(httpd_req_t *req, const char *path,
@@ -68,21 +68,29 @@ static esp_err_t serve_file(httpd_req_t *req, const char *path,
     if (use_gz)
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
 
-    if (file_size > 0) {
-        char len_str[16];
-        snprintf(len_str, sizeof(len_str), "%ld", file_size);
-        httpd_resp_set_hdr(req, "Content-Length", len_str);
+// Use a single send for files small enough for the buffer
+    if (file_size <= SERVE_CHUNK)
+    {
+        char *buf = malloc(file_size);
+        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
+
+        fread(buf, 1, file_size, f);
+        // httpd_resp_send automatically sets Content-Length and avoids chunking
+        httpd_resp_send(req, buf, file_size);
+        free(buf);
     }
+    else
+    {
+        // Fallback to chunked only for very large files, removing manual Content-Length
+        char *buf = malloc(SERVE_CHUNK);
+        if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
 
-    char *buf = malloc(SERVE_CHUNK);
-    if (!buf) { fclose(f); httpd_resp_send_500(req); return ESP_OK; }
-
-    size_t n;
-    while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
-        httpd_resp_send_chunk(req, buf, (ssize_t)n);
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    free(buf);
+        size_t n;
+        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
+            httpd_resp_send_chunk(req, buf, (ssize_t)n);
+        httpd_resp_send_chunk(req, NULL, 0);
+        free(buf);
+    }
     fclose(f);
     return ESP_OK;
 }

@@ -25,6 +25,7 @@
 #include "wifi_manager.h"
 #include "portal.h"
 #include "app_server.h"
+#include "nvs_keys.h"
 #include "config.h"
 
 #include <string.h>
@@ -45,9 +46,7 @@
 
 static const char *TAG = "wifi_mgr";
 
-#define NVS_NAMESPACE "wifi_mgr"
-#define NVS_KEY_SSID  "ssid"
-#define NVS_KEY_PASS  "pass"
+/* NVS_NS_WIFI, NVS_KEY_SSID, NVS_KEY_PASS — defined in nvs_keys.h */
 
 #define EVT_STA_CONNECTED BIT0
 #define EVT_STA_FAILED    BIT1
@@ -70,7 +69,7 @@ static volatile int           s_retry_count  = 0;
 static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
     nvs_handle_t nvs;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return false;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &nvs) != ESP_OK) return false;
 
     bool ok = (nvs_get_str(nvs, NVS_KEY_SSID, ssid, &ssid_len) == ESP_OK)
               && (ssid[0] != '\0');
@@ -84,7 +83,7 @@ static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 static void nvs_save(const char *ssid, const char *pass)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed (%s) — credentials not saved",
                  esp_err_to_name(err));
@@ -361,7 +360,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 esp_err_t wifi_manager_erase_credentials(void)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
         nvs_erase_key(nvs, NVS_KEY_SSID);
         nvs_erase_key(nvs, NVS_KEY_PASS);

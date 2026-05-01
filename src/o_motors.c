@@ -23,7 +23,7 @@
 
 static const char *TAG = "o_motors";
 
-#define DUTY_MAX  ((1 << 10) - 1)   /* 1023 for 10-bit LEDC */
+#define MOTOR_DUTY_MAX  ((1 << 10) - 1)   /* 1023 for 10-bit LEDC */
 
 static bool s_initialized = false;
 static bool s_enabled     = true;
@@ -100,12 +100,12 @@ static void drive_dir_pwm_en(float left, float right)
     /* Left */
     gpio_set_level(MOTOR_L_DIR_GPIO, left >= 0.0f ? 1 : 0);
     gpio_set_level(MOTOR_L_EN_GPIO,  1);
-    ledc_ch_set(MOTOR_L_LEDC_CHANNEL, (uint32_t)(fabsf(left)  * DUTY_MAX));
+    ledc_ch_set(MOTOR_L_LEDC_CHANNEL, (uint32_t)(fabsf(left)  * MOTOR_DUTY_MAX));
 
     /* Right */
     gpio_set_level(MOTOR_R_DIR_GPIO, right >= 0.0f ? 1 : 0);
     gpio_set_level(MOTOR_R_EN_GPIO,  1);
-    ledc_ch_set(MOTOR_R_LEDC_CHANNEL, (uint32_t)(fabsf(right) * DUTY_MAX));
+    ledc_ch_set(MOTOR_R_LEDC_CHANNEL, (uint32_t)(fabsf(right) * MOTOR_DUTY_MAX));
 }
 
 static void stop_dir_pwm_en(void)
@@ -156,8 +156,8 @@ static esp_err_t init_btn8982(void)
 
 static void drive_btn8982(float left, float right)
 {
-    uint32_t l_duty = (uint32_t)(fabsf(left)  * DUTY_MAX);
-    uint32_t r_duty = (uint32_t)(fabsf(right) * DUTY_MAX);
+    uint32_t l_duty = (uint32_t)(fabsf(left)  * MOTOR_DUTY_MAX);
+    uint32_t r_duty = (uint32_t)(fabsf(right) * MOTOR_DUTY_MAX);
 
     if (left >= 0.0f) {
         ledc_ch_set(CH_L_IN1, l_duty);

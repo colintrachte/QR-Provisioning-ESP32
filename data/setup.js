@@ -40,11 +40,28 @@ async function init() {
         });
     }
 
-    /* Skip button — navigate to robot index once connected */
+    /* Skip button — navigate to robot at its STA IP.
+     * We cannot use window.location.hostname here: when the user is on the
+     * captive portal, that hostname is the AP gateway (192.168.4.1), not the
+     * robot's STA IP. Fetch /api/status to get the real IP.
+     * If the device is not yet connected (no ip field), show a message. */
     if (elSkip) {
-        elSkip.addEventListener('click', e => {
+        elSkip.addEventListener('click', async e => {
             e.preventDefault();
-            window.location.href = 'http://' + window.location.hostname + '/';
+            elSkip.textContent = 'Checking…';
+            try {
+                const res  = await fetch('/api/status');
+                const data = await res.json();
+                if (data.ip && data.ip !== '0.0.0.0') {
+                    window.location.href = 'http://' + data.ip + '/';
+                } else {
+                    elSkip.textContent = 'Not connected yet';
+                    setTimeout(() => { elSkip.textContent = 'Test robot now →'; }, 2000);
+                }
+            } catch {
+                elSkip.textContent = 'Not reachable';
+                setTimeout(() => { elSkip.textContent = 'Test robot now →'; }, 2000);
+            }
         });
     }
 

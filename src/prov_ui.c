@@ -40,7 +40,7 @@ static bool    s_qr_index_ok = false;
 static char    s_ssid[33]       = {0};
 static char    s_ip[16]         = {0};
 static char    s_status_msg[32] = {0};
-static int     s_ws_clients     = 0;   /* set by prov_ui_set_client_count()  */
+static volatile int s_ws_clients = 0;   /* written by httpd task, read by main loop */
 
 /* ── Layout ─────────────────────────────────────────────────────────────────
  *

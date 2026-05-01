@@ -94,9 +94,12 @@
  *   Prevents motor creep from joystick centre drift.
  * DRIVE_MAX_DELTA_PER_TICK: maximum change in output per 10 ms tick.
  *   Soft acceleration ramp to avoid current spikes and wheel slip.
+ * DRIVE_WATCHDOG_MS: disarm the drive controller if no command is received
+ *   within this window. Catches browser crash, WiFi drop, tab navigation.
  */
 #define DRIVE_DEADBAND           0.05f
 #define DRIVE_MAX_DELTA_PER_TICK 0.05f  /* 0→full in ~200 ms at 10 Hz tick */
+#define DRIVE_WATCHDOG_MS         400   /* ms; disarm on command timeout    */
 
 /* ── Health monitor ─────────────────────────────────────────────────────────*/
 #define HEALTH_RSSI_WARN_DBM      -75

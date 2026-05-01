@@ -24,7 +24,19 @@ static const char *TAG = "health";
 
 static int8_t  s_rssi             = 0;
 static uint32_t s_last_rssi_ms    = 0;
-static char    s_json[HEALTH_JSON_BUF_LEN];
+
+/* Double-buffered JSON telemetry blob.
+ *
+ * health_monitor_tick() (main-loop task) writes into the inactive buffer,
+ * then flips s_json_active in a single volatile int store (atomic on
+ * ESP32-S3). app_server_push_telemetry() (httpd task) always reads from
+ * s_json[s_json_active]. This eliminates the race where the reader could
+ * observe a half-written snprintf result.
+ *
+ * The worst case is the reader seeing the previous complete JSON frame
+ * (one telemetry period stale) — acceptable for 5 Hz telemetry. */
+static char          s_json[2][HEALTH_JSON_BUF_LEN];
+static volatile int  s_json_active = 0;   /* index of the buffer safe to read */
 
 /*filesystem listing*/
 
@@ -97,7 +109,13 @@ static void build_json(void)
     else
         snprintf(temp_str, sizeof(temp_str), "%.1f", sd.temperature_c);
 
-    snprintf(s_json, sizeof(s_json),
+    /* Write into the inactive buffer, then atomically publish it.
+     * The reader (httpd task) always accesses s_json[s_json_active], so it
+     * will never see a partial snprintf result — it either reads the previous
+     * complete frame or the new one after the index flip. */
+    int write_idx = 1 - s_json_active;
+
+    snprintf(s_json[write_idx], sizeof(s_json[write_idx]),
         "{"
         "\"rssi\":%d,"
         "\"battery\":%u,"
@@ -108,6 +126,8 @@ static void build_json(void)
         "}",
         s_rssi, battery_pct, temp_str,
         (unsigned long)uptime_s, (unsigned long)heap);
+
+    s_json_active = write_idx;   /* atomic int store — publishes the new frame */
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────────*/
@@ -137,5 +157,5 @@ int8_t health_monitor_get_rssi(void)
 
 const char *health_monitor_get_telemetry_json(void)
 {
-    return s_json;
+    return s_json[s_json_active];
 }

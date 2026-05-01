@@ -26,8 +26,17 @@
  * Thread safety
  * ─────────────
  * ctrl_drive_set_axes(), ctrl_drive_set_armed(), and ctrl_drive_feed_watchdog()
- * write volatile scalars. Single 32-bit aligned writes on Xtensa LX7 are
- * atomic; volatile prevents the compiler caching them across the task boundary.
+ * write shared state from the WS task; ctrl_drive_tick() reads it on app_task.
+ *
+ * s_target_x/y use int16_t fixed-point (range -10000..10000 = -1.0..1.0).
+ * int16_t writes are atomic on Xtensa LX7 (16-bit aligned store is a single
+ * instruction). This avoids the torn-read hazard that exists with float:
+ * IEEE 754 float stores are 32-bit but the FPU does not guarantee atomicity
+ * across a task switch mid-store (exponent and mantissa can be written in two
+ * separate micro-ops under some compiler backends).
+ *
+ * All other shared scalars (uint32_t, bool) are volatile; 32/8-bit aligned
+ * writes on Xtensa LX7 are single-instruction atomic.
  * ctrl_drive_tick() runs from one task only.
  */
 
@@ -44,18 +53,20 @@ static const char *TAG = "ctrl_drive";
 
 /* ── Watchdog ───────────────────────────────────────────────────────────────
  * s_last_cmd_ms is written by the WS task, read by app_task.
- * uint32_t write on ESP32-S3 is atomic; volatile prevents register caching. */
-#ifndef DRIVE_WATCHDOG_MS
-#define DRIVE_WATCHDOG_MS  400   /* disarm if no command within this window  */
-#endif
-
+ * uint32_t write on ESP32-S3 is atomic; volatile prevents register caching.
+ * DRIVE_WATCHDOG_MS must be defined in config.h — no fallback here. */
 static volatile uint32_t s_last_cmd_ms  = 0;
 static volatile bool     s_watchdog_ok  = false;  /* false until first feed */
 
-/* ── Target axes ────────────────────────────────────────────────────────────*/
-static volatile float s_target_x = 0.0f;
-static volatile float s_target_y = 0.0f;
-static volatile bool  s_armed    = false;
+/* ── Target axes (fixed-point, int16_t) ─────────────────────────────────────
+ * Range: -10000..10000  maps to  -1.0..1.0
+ * int16_t stores are atomic on Xtensa LX7; this avoids the torn-read hazard
+ * present with volatile float (FPU store is not guaranteed single-instruction
+ * across a task switch). */
+#define AXES_SCALE  10000          /* fixed-point scale factor                */
+static volatile int16_t s_target_x_fp = 0;   /* fixed-point, range ±AXES_SCALE */
+static volatile int16_t s_target_y_fp = 0;
+static volatile bool    s_armed       = false;
 
 /* Current ramped outputs */
 static float s_current_left  = 0.0f;
@@ -110,16 +121,22 @@ void ctrl_drive_set_axes(float x, float y)
     /* Deadband: zero out, do NOT rescale here — rescaling is done client-side
      * so the firmware sees a fully-processed value. If rescaling were done
      * both places the curve would be applied twice. */
-    s_target_x = (fabsf(x) < DRIVE_DEADBAND) ? 0.0f : x;
-    s_target_y = (fabsf(y) < DRIVE_DEADBAND) ? 0.0f : y;
+    float fx = (fabsf(x) < DRIVE_DEADBAND) ? 0.0f : x;
+    float fy = (fabsf(y) < DRIVE_DEADBAND) ? 0.0f : y;
+
+    /* Convert to fixed-point for atomic storage. int16_t write is a single
+     * instruction on Xtensa LX7, avoiding the torn-read race that exists with
+     * direct float stores across task boundaries. */
+    s_target_x_fp = (int16_t)(fx * AXES_SCALE);
+    s_target_y_fp = (int16_t)(fy * AXES_SCALE);
 }
 
 void ctrl_drive_set_armed(bool armed)
 {
     s_armed = armed;
     if (!armed) {
-        s_target_x = 0.0f;
-        s_target_y = 0.0f;
+        s_target_x_fp = 0;
+        s_target_y_fp = 0;
     }
     ESP_LOGI(TAG, "%s", armed ? "ARMED" : "DISARMED");
 }
@@ -153,8 +170,10 @@ void ctrl_drive_tick(void)
         return;
     }
 
-    float x = s_target_x;
-    float y = s_target_y;
+    /* Convert fixed-point snapshot to float for mixing math.
+     * Read each int16_t once into a local — the 16-bit load is atomic. */
+    float x = (float)s_target_x_fp * (1.0f / AXES_SCALE);
+    float y = (float)s_target_y_fp * (1.0f / AXES_SCALE);
 
     /* Arcade mixing */
     float want_left  = clampf(y + x, -1.0f, 1.0f);
@@ -173,8 +192,8 @@ void ctrl_drive_tick(void)
 
 void ctrl_drive_emergency_stop(void)
 {
-    s_target_x      = 0.0f;
-    s_target_y      = 0.0f;
+    s_target_x_fp   = 0;
+    s_target_y_fp   = 0;
     s_current_left  = 0.0f;
     s_current_right = 0.0f;
     o_motors_stop();

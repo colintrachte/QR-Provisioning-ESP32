@@ -144,7 +144,7 @@ document.getElementById('connect-btn').addEventListener('click', () => {
     btn.textContent = 'Saving…';
 
     const body = 'ssid=' + encodeURIComponent(ssid) +
-                 '&pass=' + encodeURIComponent(passInput.value);
+                 '&password=' + encodeURIComponent(passInput.value);
 
     fetch('/api/connect', {
         method:  'POST',
