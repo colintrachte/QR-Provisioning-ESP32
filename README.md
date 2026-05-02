@@ -317,19 +317,19 @@ Served on port 80 after STA connects.
 
 ## Troubleshooting
 
-| Symptom                                                                   | Likely Cause                                                             | Fix                                               |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
-| Web files 404                                                             | LittleFS not mounted                                                     | `pio run -t uploadfs`                             |
-| Segmentation Fault or something that looks like it's the compiler's fault | File Explorer is blocking the build related to managed components folder | Close file browsers open to the project directory |
-| WebSocket not connecting                                                  | `CONFIG_HTTPD_WS_SUPPORT` missing                                        | Add to `sdkconfig.defaults`                       |
-| OLED blank                                                                | Vext GPIO (36), I2C address, cable                                       | Check hardware, `i_sensors_init()` log            |
-| QR not scannable                                                          | SSID/password too long                                                   | Reduce length or lower ECC in `qr_gen.c`          |
-| Motors don't move                                                         | Wrong `MOTOR_DRIVER_MODE` / not armed                                    | Check `config.h`, arm in UI                       |
-| Boot loops                                                                | Corrupt NVS or WiFi init fail                                            | Hold GPIO0 3s to erase credentials                |
-| I2C errors after WiFi                                                     | `i_sensors_init()` order wrong                                           | Must run **after** `wifi_manager_start()`         |
-| OTA 500                                                                   | Image too large for partition                                            | Check partition sizes vs `.bin`                   |
-| OTA 401                                                                   | Missing `X-OTA-Token`                                                    | Check `OTA_AUTH_TOKEN` in build flags             |
-| No rollback                                                               | `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` missing                          | Add to `sdkconfig.defaults`                       |
+| Symptom                                                                   | Likely Cause                                                             | Fix                                                            |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Web files 404                                                             | LittleFS not mounted, or file references are mismatched                  | `pio run -t uploadfs`, double check anycode that touches files |
+| Segmentation Fault or something that looks like it's the compiler's fault | File Explorer is blocking the build related to managed components folder | Close file browsers open to the project directory              |
+| WebSocket not connecting                                                  | `CONFIG_HTTPD_WS_SUPPORT` missing                                        | Add to `sdkconfig.defaults`                                    |
+| OLED blank                                                                | Vext GPIO (36), I2C address, cable                                       | Check hardware, `i_sensors_init()` log                         |
+| QR not scannable                                                          | SSID/password too long                                                   | Reduce length or lower ECC in `qr_gen.c`                       |
+| Motors don't move                                                         | Wrong `MOTOR_DRIVER_MODE` / not armed                                    | Check `config.h`, arm in UI                                    |
+| Boot loops                                                                | Corrupt NVS or WiFi init fail                                            | Hold GPIO0 3s to erase credentials                             |
+| I2C errors after WiFi                                                     | `i_sensors_init()` order wrong                                           | Must run **after** `wifi_manager_start()`                      |
+| OTA 500                                                                   | Image too large for partition                                            | Check partition sizes vs `.bin`                                |
+| OTA 401                                                                   | Missing `X-OTA-Token`                                                    | Check `OTA_AUTH_TOKEN` in build flags                          |
+| No rollback                                                               | `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` missing                          | Add to `sdkconfig.defaults`                                    |
 
 ---
 
