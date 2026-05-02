@@ -16,8 +16,8 @@
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
-#include "file_manager.h"
-#include "web_utils.h"
+#include "utils_filesystem.h"
+#include "utils_web.h"
 #include "config.h"
 #include <dirent.h>
 #include <sys/stat.h>

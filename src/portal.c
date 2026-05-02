@@ -12,8 +12,8 @@
 
 #include "portal.h"
 #include "config.h"
-#include "file_manager.h"
-#include "web_utils.h"
+#include "utils_filesystem.h"
+#include "utils_web.h"
 
 #include <string.h>
 #include <stdio.h>
