@@ -22,8 +22,8 @@
 #include "freertos/FreeRTOS.h"
 
 static const char *TAG = "o_motors";
-
-#define MOTOR_DUTY_MAX  ((1 << 10) - 1)   /* 1023 for 10-bit LEDC */
+//Resolution is set in boards/your board.h
+#define MOTOR_DUTY_MAX  ((1u << MOTOR_LEDC_RESOLUTION) - 1)
 
 static bool s_initialized = false;
 static bool s_enabled     = true;

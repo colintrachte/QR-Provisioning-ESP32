@@ -32,9 +32,9 @@ static bool                   s_initialized = false;
 static TimerHandle_t          s_timer       = NULL;
 static volatile led_pattern_t s_pattern     = LED_PATTERN_OFF;
 static volatile int           s_step        = 0;
-
-#define LED_DUTY_MAX  ((1u << 8) - 1u)   /* 255 for 8-bit resolution */
-
+//Resolution is set in boards/your board.h
+#define LED_DUTY_MAX  ((1u << LED_LEDC_RESOLUTION) - 1u)
+//maybe better to compute at runtime from ledc_timer_config_t.duty_resolution?
 static void set_duty(uint32_t duty)
 {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LED_LEDC_CHANNEL, duty);
