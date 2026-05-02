@@ -25,6 +25,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -352,6 +353,35 @@ static esp_err_t handle_probe(httpd_req_t *req)
 }
 
 /* GET /api/scan — returns cached AP list immediately */
+/* GET /api/status — returns STA connection state and IP.
+ * setup.js calls this so the "Test robot now" skip button can redirect to
+ * the robot's real STA IP rather than the AP gateway address. */
+static esp_err_t handle_api_status(httpd_req_t *req)
+{
+    char ip[16] = {0};
+    bool connected = false;
+
+    wifi_ap_record_t ap = {0};
+    esp_netif_ip_info_t ip_info = {0};
+    esp_netif_t *sta_if = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    if (sta_if && esp_netif_get_ip_info(sta_if, &ip_info) == ESP_OK
+            && ip_info.ip.addr != 0) {
+        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
+        connected = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
+    }
+
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "{\"connected\":%s,\"ip\":\"%s\"}",
+        connected ? "true" : "false", ip);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 static esp_err_t handle_scan(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -390,6 +420,7 @@ static esp_err_t handle_rescan(httpd_req_t *req)
     return handle_scan(req);
 }
 
+/* ── URL decode — delegates to web_utils ───────────────────────────────────*/
 static void extract_field(const char *body, const char *key,
                            char *out, int out_size)
 {
@@ -464,9 +495,10 @@ static void start_httpd(void)
         { .uri="/favicon.ico",.method=HTTP_GET,  .handler=handle_favicon   },
 
         /* WiFi credentials API */
-        { .uri="/api/scan",   .method=HTTP_GET,  .handler=handle_scan      },
-        { .uri="/api/rescan", .method=HTTP_GET,  .handler=handle_rescan    },
-        { .uri="/api/connect",.method=HTTP_POST, .handler=handle_connect   },
+        { .uri="/api/status",  .method=HTTP_GET,  .handler=handle_api_status},
+        { .uri="/api/scan",    .method=HTTP_GET,  .handler=handle_scan      },
+        { .uri="/api/rescan",  .method=HTTP_GET,  .handler=handle_rescan    },
+        { .uri="/api/connect", .method=HTTP_POST, .handler=handle_connect   },
 
         /* OS captive portal probes — explicit before wildcard */
         { .uri="/hotspot-detect.html",       .method=HTTP_GET, .handler=handle_probe },

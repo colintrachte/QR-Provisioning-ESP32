@@ -69,6 +69,7 @@ esp_err_t web_serve_file(httpd_req_t *req, const char *path,
         return httpd_resp_send_500(req);
     }
     if (file_size > 256 * 1024) {   // pick a sane upper bound
+        ESP_LOGE(TAG, "File too large to serve: %s (%ld B)", path, file_size);
         fclose(f);
         return httpd_resp_send_500(req);
     }

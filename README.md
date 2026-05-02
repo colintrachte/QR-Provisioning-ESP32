@@ -320,6 +320,7 @@ Served on port 80 after STA connects.
 | Symptom                  | Likely Cause                                    | Fix                                       |
 | ------------------------ | ----------------------------------------------- | ----------------------------------------- |
 | Web files 404            | LittleFS not mounted                            | `pio run -t uploadfs`                     |
+| Segmentation Fault       | Intellisense Index                              | Full Clean/Rebuild Intellisense           |
 | WebSocket not connecting | `CONFIG_HTTPD_WS_SUPPORT` missing               | Add to `sdkconfig.defaults`               |
 | OLED blank               | Vext GPIO (36), I2C address, cable              | Check hardware, `i_sensors_init()` log    |
 | QR not scannable         | SSID/password too long                          | Reduce length or lower ECC in `qr_gen.c`  |

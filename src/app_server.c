@@ -11,15 +11,14 @@
  */
 
 #include "app_server.h"
-#include "web_utils.h"
 #include "ctrl_drive.h"
 #include "o_led.h"
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
 #include "file_manager.h"
+#include "web_utils.h"
 #include "config.h"
-#include "nvs_keys.h"
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -86,9 +85,9 @@ static esp_err_t handle_404(httpd_req_t *req)
 #include "nvs_flash.h"
 #include "nvs.h"
 
-#define SETTINGS_NVS_NAMESPACE  NVS_NS_WIFI   /* defined in nvs_keys.h */
-#define SETTINGS_NVS_KEY_SSID   NVS_KEY_SSID
-#define SETTINGS_NVS_KEY_PASS   NVS_KEY_PASS
+#define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
+#define SETTINGS_NVS_KEY_SSID   "ssid"
+#define SETTINGS_NVS_KEY_PASS   "pass"
 
 #define MAX_SCAN_APS  20
 
@@ -261,19 +260,12 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
     buf[pos++] = '[';
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
     for (int i = 0; i < s_scan_count; i++) {
-        int remaining = MAX_SCAN_APS * 100 - pos;
-        if (remaining <= 0) break;
-        int written = snprintf(buf + pos, remaining,
+        pos += snprintf(buf + pos, MAX_SCAN_APS * 100 - pos,
             "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
             i ? "," : "",
             s_scan_aps[i].ssid,
             s_scan_aps[i].quality,
             s_scan_aps[i].secure ? "true" : "false");
-        if (written >= remaining) {
-            pos = MAX_SCAN_APS * 100 - 1;
-            break;
-        }
-        pos += written;
     }
     xSemaphoreGive(s_scan_mutex);
     buf[pos++] = ']';
@@ -284,6 +276,7 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/connect */
 static esp_err_t handle_api_connect(httpd_req_t *req)
 {
     char body[320] = {0};
@@ -301,11 +294,8 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
         if (len >= (int)sizeof(ssid_enc)) len = sizeof(ssid_enc) - 1;
         memcpy(ssid_enc, p, len);
     }
-    /* Field name is "password" — matches the portal form and settings.js.
-     * The previous "pass=" string caused silent empty-password saves because
-     * settings.js POSTs "password=..." (same field name as the portal). */
-    if ((p = strstr(body, "password=")) != NULL) {
-        p += 9;
+    if ((p = strstr(body, "pass=")) != NULL) {
+        p += 5;
         const char *e = strchr(p, '&');
         int len = e ? (int)(e - p) : (int)strlen(p);
         if (len >= (int)sizeof(pass_enc)) len = sizeof(pass_enc) - 1;
