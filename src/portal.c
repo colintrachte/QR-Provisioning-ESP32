@@ -8,12 +8,18 @@
  *
  * No background scan task = no radio channel-hopping while a phone is
  * trying to associate. This eliminates the missed-probe reboot bug.
+ *
+ * JSON
+ * ────
+ * Scan results and status responses are built with vfs_build_scan_json() and
+ * vfs_build_status_json() (utils_filesystem). No hand-rolled snprintf JSON.
  */
 
 #include "portal.h"
 #include "config.h"
 #include "utils_filesystem.h"
 #include "utils_web.h"
+#include "utils_json.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -26,6 +32,7 @@
 #include "esp_http_server.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -33,36 +40,29 @@
 
 static const char *TAG = "portal";
 
-#define FS_BASE       "/littlefs"
+#define FS_BASE  "/littlefs"
 
-/* ── Credentials ───────────────────────────────────────────────────────────*/
+/* ── Credentials ───────────────────────────────────────────────────────── */
 static char s_ssid[33] = {0};
 static char s_pass[65] = {0};
 
-/* ── Synchronisation ──────────────────────────────────────────────────────*/
-#define CREDS_RECEIVED_BIT BIT0
+/* ── Synchronisation ────────────────────────────────────────────────────── */
+#define CREDS_RECEIVED_BIT  BIT0
 static EventGroupHandle_t s_event_group = NULL;
 
-/* ── Scan cache ────────────────────────────────────────────────────────────*/
-#define SCAN_MAX_APS     20
+/* ── Scan cache ─────────────────────────────────────────────────────────── */
+#define SCAN_MAX_APS  20
 
-typedef struct {
-    char ssid[64];   /* JSON-escaped */
-    int  quality;    /* 0–100 derived from RSSI */
-    bool secure;
-} ap_cache_t;
+/* Store raw wifi_ap_record_t so vfs_build_scan_json() can process them.
+ * No more duplicated SSID-escaping or quality-conversion logic here. */
+static SemaphoreHandle_t s_scan_mutex   = NULL;
+static wifi_ap_record_t  s_scan_recs[SCAN_MAX_APS];
+static int               s_scan_count   = 0;
+static bool              s_scan_ready   = false;
+static volatile bool     s_scan_pending = false;
 
-static SemaphoreHandle_t  s_scan_mutex  = NULL;
-static ap_cache_t         s_scan_aps[SCAN_MAX_APS];
-static int                s_scan_count  = 0;
-static bool               s_scan_ready  = false;
-static volatile bool      s_scan_pending = false;
+/* ── Blocking scan ──────────────────────────────────────────────────────── */
 
-/* ── Blocking scan ─────────────────────────────────────────────────────────
- * Called once at startup and on explicit GET /api/rescan.
- * Radio is off-channel for ~3 s; no AP clients can be present because
- * we only call this before the phone joins or when user clicks Rescan.
- */
 static void run_scan_once(void)
 {
     ESP_LOGI(TAG, "scan: starting blocking scan");
@@ -71,49 +71,24 @@ static void run_scan_once(void)
         .show_hidden = false,
         .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
     };
-
     if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
         ESP_LOGW(TAG, "scan: start failed");
         return;
     }
 
     uint16_t count = SCAN_MAX_APS;
-    wifi_ap_record_t *recs = calloc(SCAN_MAX_APS, sizeof(wifi_ap_record_t));
-    if (!recs) return;
-
-    esp_wifi_scan_get_ap_records(&count, recs);
-
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-    s_scan_count = 0;
-    for (int i = 0; i < (int)count && s_scan_count < SCAN_MAX_APS; i++) {
-        if (recs[i].ssid[0] == '\0') continue;
-
-        int si = 0;
-        for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
-            char c = (char)recs[i].ssid[j];
-            if ((c == '"' || c == '\\') &&
-                si < (int)sizeof(s_scan_aps[0].ssid) - 2)
-                s_scan_aps[s_scan_count].ssid[si++] = '\\';
-            if (si < (int)sizeof(s_scan_aps[0].ssid) - 1)
-                s_scan_aps[s_scan_count].ssid[si++] = c;
-        }
-        s_scan_aps[s_scan_count].ssid[si] = '\0';
-
-        int rssi = recs[i].rssi;
-        s_scan_aps[s_scan_count].quality =
-            rssi <= -100 ? 0 : rssi >= -40 ? 100 : 2 * (rssi + 100);
-        s_scan_aps[s_scan_count].secure =
-            (recs[i].authmode != WIFI_AUTH_OPEN);
-        s_scan_count++;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&count, s_scan_recs);
+    if (err == ESP_OK) {
+        s_scan_count = (int)count;
+        s_scan_ready = true;
+        ESP_LOGI(TAG, "scan: %d APs cached", s_scan_count);
+    } else {
+        ESP_LOGW(TAG, "scan: get records failed: %s", esp_err_to_name(err));
     }
-    s_scan_ready = true;
     xSemaphoreGive(s_scan_mutex);
-
-    ESP_LOGI(TAG, "scan: %d APs cached", s_scan_count);
-    free(recs);
 }
 
-/* Background scan task for async rescan */
 static void scan_bg_task(void *arg)
 {
     (void)arg;
@@ -122,7 +97,7 @@ static void scan_bg_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* ── DNS hijack ────────────────────────────────────────────────────────────*/
+/* ── DNS hijack ─────────────────────────────────────────────────────────── */
 static int           s_dns_sock = -1;
 static volatile bool s_dns_run  = false;
 
@@ -197,86 +172,48 @@ static void stop_dns(void)
     vTaskDelay(pdMS_TO_TICKS(150));
 }
 
-/* ── httpd handlers ────────────────────────────────────────────────────────*/
+/* ── JSON response helper ───────────────────────────────────────────────── */
+
+static esp_err_t send_json(httpd_req_t *req, cJSON *obj)
+{
+    if (!obj) { httpd_resp_send_500(req); return ESP_OK; }
+    char *body = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!body) { httpd_resp_send_500(req); return ESP_OK; }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_sendstr(req, body);
+    free(body);
+    return ESP_OK;
+}
+
+/* ── httpd handlers ─────────────────────────────────────────────────────── */
 
 static esp_err_t handle_root(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/setup.html", "text/html", false); }
+    { return web_serve_file(req, FS_BASE "/setup.html", "text/html",              false); }
 
 static esp_err_t handle_favicon(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/favicon.svg", "image/svg+xml", true); }
+    { return web_serve_file(req, FS_BASE "/favicon.svg", "image/svg+xml",         true); }
 
 static esp_err_t handle_base_css(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/base.css",   "text/css",       true); }
+    { return web_serve_file(req, FS_BASE "/base.css",    "text/css",              true); }
 
 static esp_err_t handle_setup_css(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/setup.css",  "text/css",       true); }
+    { return web_serve_file(req, FS_BASE "/setup.css",   "text/css",              true); }
 
 static esp_err_t handle_setup_js(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/setup.js",  "application/javascript", true); }
+    { return web_serve_file(req, FS_BASE "/setup.js",    "application/javascript", true); }
 
-/* ── Captive-portal probe handler ─────────────────────────────────────────
+/* ── Captive-portal probe handler ───────────────────────────────────────────
  *
- * Goal: make every OS automatically open its captive portal UI (popup /
- * system WebView / notification) the moment the user joins the AP, without
- * them having to manually open a browser.
- *
- * The DNS hijack already points every hostname at us; these responses
- * complete the signal for each OS's detector.
- *
- * iOS / macOS (CNA — Captive Network Assistant)
- * ─────────────────────────────────────────────
- *   Probe:    GET /hotspot-detect.html (and /library/test/success.html)
- *   Expects:  200 with body containing "<SUCCESS>" or matching Apple's
- *             canonical success document exactly.
- *   We return: 302 → http://AP_GW_IP/
- *   Effect:   CNA sees the redirect, confirms captive portal, and
- *             immediately opens a full-screen system WebView to our page.
- *
- * Android (all versions, including Pixel, Samsung, Xiaomi)
- * ─────────────────────────────────────────────────────────
- *   Probe:    GET /generate_204, GET /gen_204 (any hostname via DNS hijack)
- *   Expects:  HTTP 204 No Content.
- *   We return: 302 → http://AP_GW_IP/
- *   Effect:   Non-204 response triggers the "Sign in to network"
- *             notification. Tapping it opens our page in a WebView.
- *   Note:     302 redirect is more reliable than 200+body across OEMs.
- *             Some Android versions ignore meta-refresh in 200 bodies.
- *             HTTPS probes fail at TLS (no cert) which also signals captive.
- *
- * Windows (NCSI — Network Connectivity Status Indicator)
- * ──────────────────────────────────────────────────────
- *   Probes:   GET /connecttest.txt  (expects "Microsoft Connect Test")
- *             GET /ncsi.txt         (expects "Microsoft NCSI")
- *             GET /redirect         (expects 302 → msftconnecttest.com)
- *   We return: wrong body for text probes (forces captive detection);
- *             /redirect points to msftconnecttest.com (DNS hijacked to us).
- *   Effect:   NCSI marks "No internet access" and shows network flyout.
- *             Clicking it opens the browser to our page via DNS hijack.
- *
- * Windows 11 (new probe)
- * ──────────────────────
- *   Probe:    GET /captiveportal/generate_204
- *   We return: 302 → http://AP_GW_IP/
- *
- * Linux / NetworkManager
- * ──────────────────────
- *   Probe:    GET /nm-check.txt, /check_network_status.txt
- *   We return: wrong body → portal detected.
- *
- * Firefox (all platforms)
- * ───────────────────────
- *   Probe:    GET /canonical.html (expects "success")
- *   We return: 302 → http://AP_GW_IP/
- *
- * Wildcard
- * ────────
- *   Anything else (including real browser navigation) gets 302 to setup page.
+ * Triggers the system captive-portal UI on iOS, Android, Windows, Linux,
+ * and Firefox. See inline comments for per-OS behaviour.
  */
 static esp_err_t handle_probe(httpd_req_t *req)
 {
     const char *uri = req->uri;
 
-    /* ── iOS / macOS ────────────────────────────────────────────────────*/
+    /* iOS / macOS CNA */
     if (strcmp(uri, "/hotspot-detect.html")       == 0 ||
         strcmp(uri, "/library/test/success.html") == 0 ||
         strcmp(uri, "/ captive.apple.com")        == 0) {
@@ -287,9 +224,7 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* ── Android ────────────────────────────────────────────────────────
-     * Return 302 (not 204) to trigger captive portal notification.
-     * Content-Length: 0 required for HTTP/1.1 compliance on 302. */
+    /* Android — 302 (not 204) to trigger captive portal notification */
     if (strcmp(uri, "/generate_204") == 0 ||
         strcmp(uri, "/gen_204")      == 0) {
         httpd_resp_set_status(req, "302 Found");
@@ -299,16 +234,13 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* ── Windows NCSI ───────────────────────────────────────────────────
-     * Return WRONG body for text probes → NCSI fails → marks captive. */
+    /* Windows NCSI — wrong body forces captive detection */
     if (strcmp(uri, "/connecttest.txt") == 0 ||
         strcmp(uri, "/ncsi.txt")        == 0) {
         httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "captive");   /* NOT "Microsoft Connect Test" */
+        httpd_resp_sendstr(req, "captive");
         return ESP_OK;
     }
-    /* /redirect MUST point to msftconnecttest.com so Windows follows the
-     * expected chain. Our DNS hijack then resolves that domain to AP_GW_IP. */
     if (strcmp(uri, "/redirect") == 0) {
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://www.msftconnecttest.com/redirect");
@@ -317,7 +249,7 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* ── Windows 11 new probe ──────────────────────────────────────────*/
+    /* Windows 11 */
     if (strcmp(uri, "/captiveportal/generate_204") == 0) {
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
@@ -326,17 +258,17 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* ── Linux / NetworkManager ────────────────────────────────────────*/
-    if (strcmp(uri, "/nm-check.txt") == 0 ||
+    /* Linux / NetworkManager */
+    if (strcmp(uri, "/nm-check.txt")             == 0 ||
         strcmp(uri, "/check_network_status.txt") == 0) {
         httpd_resp_set_type(req, "text/plain");
         httpd_resp_sendstr(req, "captive");
         return ESP_OK;
     }
 
-    /* ── Firefox ───────────────────────────────────────────────────────*/
+    /* Firefox */
     if (strcmp(uri, "/canonical.html") == 0 ||
-        strcmp(uri, "/success.txt")     == 0) {
+        strcmp(uri, "/success.txt")    == 0) {
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
         httpd_resp_set_hdr(req, "Content-Length", "0");
@@ -344,70 +276,33 @@ static esp_err_t handle_probe(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* ── Wildcard ──────────────────────────────────────────────────────
-     * Any other request (including direct browser navigation) → redirect */
+    /* Wildcard — any other request → redirect to setup page */
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
-/* GET /api/scan — returns cached AP list immediately */
-/* GET /api/status — returns STA connection state and IP.
- * setup.js calls this so the "Test robot now" skip button can redirect to
- * the robot's real STA IP rather than the AP gateway address. */
+/* GET /api/status */
 static esp_err_t handle_api_status(httpd_req_t *req)
 {
-    char ip[16] = {0};
-    bool connected = false;
-
-    wifi_ap_record_t ap = {0};
-    esp_netif_ip_info_t ip_info = {0};
-    esp_netif_t *sta_if = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-
-    if (sta_if && esp_netif_get_ip_info(sta_if, &ip_info) == ESP_OK
-            && ip_info.ip.addr != 0) {
-        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
-        connected = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
-    }
-
-    char buf[128];
-    snprintf(buf, sizeof(buf),
-        "{\"connected\":%s,\"ip\":\"%s\"}",
-        connected ? "true" : "false", ip);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_sendstr(req, buf);
-    return ESP_OK;
+    return send_json(req, vfs_build_status_json());
 }
 
+/* GET /api/scan — returns cached AP list immediately */
 static esp_err_t handle_scan(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-
     if (!s_scan_ready) {
-        httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
-        return ESP_OK;
+        cJSON *scanning = cJSON_CreateObject();
+        cJSON_AddStringToObject(scanning, "status", "scanning");
+        return send_json(req, scanning);
     }
 
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-    httpd_resp_sendstr_chunk(req, "[");
-    for (int i = 0; i < s_scan_count; i++) {
-        char entry[128];
-        snprintf(entry, sizeof(entry),
-                 "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
-                 i ? "," : "",
-                 s_scan_aps[i].ssid,
-                 s_scan_aps[i].quality,
-                 s_scan_aps[i].secure ? "true" : "false");
-        httpd_resp_sendstr_chunk(req, entry);
-    }
+    cJSON *arr = vfs_build_scan_json(s_scan_recs, s_scan_count);
     xSemaphoreGive(s_scan_mutex);
-    httpd_resp_sendstr_chunk(req, "]");
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+
+    return send_json(req, arr);
 }
 
 /* GET /api/rescan — triggers background scan, returns current cache */
@@ -420,7 +315,8 @@ static esp_err_t handle_rescan(httpd_req_t *req)
     return handle_scan(req);
 }
 
-/* ── URL decode — delegates to web_utils ───────────────────────────────────*/
+/* ── URL field extraction ───────────────────────────────────────────────── */
+
 static void extract_field(const char *body, const char *key,
                            char *out, int out_size)
 {
@@ -440,7 +336,7 @@ static void extract_field(const char *body, const char *key,
     free(tmp);
 }
 
-/* POST /api/connect — body: ssid=<url-encoded>&password=<url-encoded> */
+/* POST /api/connect */
 static esp_err_t handle_connect(httpd_req_t *req)
 {
     char body[320] = {0};
@@ -467,13 +363,12 @@ static esp_err_t handle_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── httpd lifecycle ───────────────────────────────────────────────────────*/
+/* ── httpd lifecycle ─────────────────────────────────────────────────────── */
 static httpd_handle_t s_httpd = NULL;
 
 static void start_httpd(void)
 {
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    /* Increased to handle all explicit probe routes + wildcard fallback */
     cfg.max_uri_handlers  = 24;
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
@@ -482,23 +377,24 @@ static void start_httpd(void)
     cfg.backlog_conn      = 5;
 
     if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
-        ESP_LOGE(TAG, "httpd_start failed"); return;
+        ESP_LOGE(TAG, "httpd_start failed");
+        return;
     }
 
     static const httpd_uri_t routes[] = {
-        /* Setup page and its assets — SPECIFIC routes first */
-        { .uri="/",           .method=HTTP_GET,  .handler=handle_root      },
-        { .uri="/base.css",   .method=HTTP_GET,  .handler=handle_base_css  },
-        { .uri="/setup.css",  .method=HTTP_GET,  .handler=handle_setup_css },
-        { .uri="/setup.js",   .method=HTTP_GET,  .handler=handle_setup_js  },
-        { .uri="/favicon.svg",.method=HTTP_GET,  .handler=handle_favicon   },
-        { .uri="/favicon.ico",.method=HTTP_GET,  .handler=handle_favicon   },
+        /* Setup page assets — specific routes before wildcard */
+        { .uri="/",            .method=HTTP_GET,  .handler=handle_root      },
+        { .uri="/base.css",    .method=HTTP_GET,  .handler=handle_base_css  },
+        { .uri="/setup.css",   .method=HTTP_GET,  .handler=handle_setup_css },
+        { .uri="/setup.js",    .method=HTTP_GET,  .handler=handle_setup_js  },
+        { .uri="/favicon.svg", .method=HTTP_GET,  .handler=handle_favicon   },
+        { .uri="/favicon.ico", .method=HTTP_GET,  .handler=handle_favicon   },
 
-        /* WiFi credentials API */
-        { .uri="/api/status",  .method=HTTP_GET,  .handler=handle_api_status},
-        { .uri="/api/scan",    .method=HTTP_GET,  .handler=handle_scan      },
-        { .uri="/api/rescan",  .method=HTTP_GET,  .handler=handle_rescan    },
-        { .uri="/api/connect", .method=HTTP_POST, .handler=handle_connect   },
+        /* WiFi API */
+        { .uri="/api/status",  .method=HTTP_GET,  .handler=handle_api_status },
+        { .uri="/api/scan",    .method=HTTP_GET,  .handler=handle_scan       },
+        { .uri="/api/rescan",  .method=HTTP_GET,  .handler=handle_rescan     },
+        { .uri="/api/connect", .method=HTTP_POST, .handler=handle_connect    },
 
         /* OS captive portal probes — explicit before wildcard */
         { .uri="/hotspot-detect.html",       .method=HTTP_GET, .handler=handle_probe },
@@ -510,19 +406,20 @@ static void start_httpd(void)
         { .uri="/redirect",                  .method=HTTP_GET, .handler=handle_probe },
         { .uri="/captiveportal/generate_204",.method=HTTP_GET, .handler=handle_probe },
         { .uri="/nm-check.txt",              .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/canonical.html",           .method=HTTP_GET, .handler=handle_probe },
+        { .uri="/canonical.html",            .method=HTTP_GET, .handler=handle_probe },
 
         /* Wildcard catch-all — MUST BE LAST */
-        { .uri="/*",          .method=HTTP_GET,  .handler=handle_probe     },
-        { .uri="/*",          .method=HTTP_HEAD, .handler=handle_probe     },
+        { .uri="/*", .method=HTTP_GET,  .handler=handle_probe },
+        { .uri="/*", .method=HTTP_HEAD, .handler=handle_probe },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
 
-    ESP_LOGI(TAG, "Portal httpd started (%d routes)", (int)(sizeof(routes)/sizeof(routes[0])));
+    ESP_LOGI(TAG, "Portal httpd started (%d routes)",
+             (int)(sizeof(routes)/sizeof(routes[0])));
 }
 
-/* ── Public API ────────────────────────────────────────────────────────────*/
+/* ── Public API ─────────────────────────────────────────────────────────── */
 
 void portal_start(const char *ap_ssid)
 {

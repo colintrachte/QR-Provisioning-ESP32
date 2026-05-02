@@ -4,77 +4,52 @@
  * I2C scanning has moved to i_sensors.c. This module reads from
  * i_sensors_get_data(), i_battery_percent(), and the WiFi driver.
  * It then formats a JSON telemetry blob for app_server to push.
+ *
+ * JSON
+ * ────
+ * The telemetry blob is built with cJSON rather than hand-rolled snprintf.
+ * cJSON handles NaN/null for the temperature field cleanly, and escapes any
+ * future string fields automatically.
+ *
+ * Double-buffer
+ * ─────────────
+ * health_monitor_tick() (main-loop task) writes into the inactive buffer,
+ * then flips s_json_active in a single volatile int store (atomic on
+ * ESP32-S3). app_server_push_telemetry() (httpd task) always reads from
+ * s_json[s_json_active]. This eliminates the race where the reader could
+ * observe a half-written result.
+ *
+ * The worst case is the reader seeing the previous complete JSON frame
+ * (one telemetry period stale) — acceptable for 5 Hz telemetry.
  */
 
 #include "health_monitor.h"
 #include "i_sensors.h"
 #include "i_battery.h"
 #include "wifi_manager.h"
+#include "utils_json.h"
 #include "config.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "health";
 
-static int8_t  s_rssi             = 0;
-static uint32_t s_last_rssi_ms    = 0;
+static int8_t   s_rssi          = 0;
+static uint32_t s_last_rssi_ms  = 0;
 
-/* Double-buffered JSON telemetry blob.
- *
- * health_monitor_tick() (main-loop task) writes into the inactive buffer,
- * then flips s_json_active in a single volatile int store (atomic on
- * ESP32-S3). app_server_push_telemetry() (httpd task) always reads from
- * s_json[s_json_active]. This eliminates the race where the reader could
- * observe a half-written snprintf result.
- *
- * The worst case is the reader seeing the previous complete JSON frame
- * (one telemetry period stale) — acceptable for 5 Hz telemetry. */
-static char          s_json[2][HEALTH_JSON_BUF_LEN];
-static volatile int  s_json_active = 0;   /* index of the buffer safe to read */
+/* Double-buffered serialised JSON — see module comment above. */
+static char         s_json[2][HEALTH_JSON_BUF_LEN];
+static volatile int s_json_active = 0;
 
-/*filesystem listing*/
-
-/**
- * Lists all files in the LittleFS 'storage' partition.
- * The path "/storage" matches the label in your partitions_8mb.csv.
-
-void list_storage_contents(void)
-{
-    const char *base_path = "/storage";
-    DIR *dir = opendir(base_path);
-
-    if (dir == NULL)
-    {
-        ESP_LOGE(TAG, "health_monitor_init — LittleFS: MOUNT_NOT_FOUND");
-        return;
-    }
-
-    struct dirent *entry;
-
-    while ((entry = readdir(dir)) != NULL)
-    {
-        // Filter out the directory navigation entries
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-        {
-            continue;
-        }
-
-        // Formatted per request: ESP_LOGI(TAG, "context — filename: PRESENT");
-        ESP_LOGI(TAG, "health_monitor_init — %s: %s",
-                 entry->d_name,
-                 "PRESENT");
-    }
-
-    closedir(dir);
-}
- */
-/* ── RSSI ───────────────────────────────────────────────────────────────────*/
+/* ── RSSI ────────────────────────────────────────────────────────────────── */
 
 static void check_rssi(void)
 {
@@ -92,45 +67,61 @@ static void check_rssi(void)
 }
 
 /* ── Telemetry JSON builder ─────────────────────────────────────────────────
- * Matches the JSON shape script.js already parses. Extend fields here as
- * new sensors are wired up in i_sensors.
+ *
+ * Shape (matches what index.js already parses):
+ *   { "rssi": -65, "battery": 80, "temp": 23.4, "uptime": 123, "heap": 200000, "errors": 0 }
+ *   "temp" is JSON null when no sensor is available (isnan).
+ *
+ * We write into the inactive buffer then atomically publish by flipping
+ * s_json_active. The httpd task always reads s_json[s_json_active] and will
+ * see either the previous complete frame or the new one — never a partial write.
  */
 static void build_json(void)
 {
-    i_sensor_data_t sd  = i_sensors_get_data();
-    uint8_t battery_pct = i_battery_percent();
-    uint32_t uptime_s   = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
-    uint32_t heap       = (uint32_t)esp_get_free_heap_size();
+    i_sensor_data_t sd      = i_sensors_get_data();
+    uint8_t         bat_pct = i_battery_percent();
+    uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
+    uint32_t heap     = (uint32_t)esp_get_free_heap_size();
 
-    /* Temperature: emit null if no sensor */
-    char temp_str[16];
+    cJSON *obj = cJSON_CreateObject();
+    if (!obj) return;   /* OOM — keep serving the previous frame */
+
+    cJSON_AddNumberToObject(obj, "rssi",    s_rssi);
+    cJSON_AddNumberToObject(obj, "battery", bat_pct);
+
+    /* Temperature: emit JSON null when no sensor present */
     if (isnan(sd.temperature_c))
-        snprintf(temp_str, sizeof(temp_str), "null");
+        cJSON_AddNullToObject(obj, "temp");
     else
-        snprintf(temp_str, sizeof(temp_str), "%.1f", sd.temperature_c);
+        cJSON_AddNumberToObject(obj, "temp", (double)sd.temperature_c);
 
-    /* Write into the inactive buffer, then atomically publish it.
-     * The reader (httpd task) always accesses s_json[s_json_active], so it
-     * will never see a partial snprintf result — it either reads the previous
-     * complete frame or the new one after the index flip. */
+    cJSON_AddNumberToObject(obj, "uptime", (double)uptime_s);
+    cJSON_AddNumberToObject(obj, "heap",   (double)heap);
+    cJSON_AddNumberToObject(obj, "errors", 0);
+
     int write_idx = 1 - s_json_active;
 
-    snprintf(s_json[write_idx], sizeof(s_json[write_idx]),
-        "{"
-        "\"rssi\":%d,"
-        "\"battery\":%u,"
-        "\"temp\":%s,"
-        "\"uptime\":%lu,"
-        "\"heap\":%lu,"
-        "\"errors\":0"
-        "}",
-        s_rssi, battery_pct, temp_str,
-        (unsigned long)uptime_s, (unsigned long)heap);
+    char *serialised = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+
+    if (!serialised) return;   /* OOM — keep previous frame */
+
+    /* Guard against overflow — HEALTH_JSON_BUF_LEN must be large enough.
+     * 128 B is sufficient for the current field set; log a warning if not. */
+    size_t len = strlen(serialised);
+    if (len >= HEALTH_JSON_BUF_LEN) {
+        ESP_LOGW(TAG, "Telemetry JSON truncated (%u >= %d)",
+                 (unsigned)len, HEALTH_JSON_BUF_LEN);
+        len = HEALTH_JSON_BUF_LEN - 1;
+    }
+    memcpy(s_json[write_idx], serialised, len);
+    s_json[write_idx][len] = '\0';
+    free(serialised);
 
     s_json_active = write_idx;   /* atomic int store — publishes the new frame */
 }
 
-/* ── Public API ─────────────────────────────────────────────────────────────*/
+/* ── Public API ─────────────────────────────────────────────────────────── */
 
 void health_monitor_init(void)
 {

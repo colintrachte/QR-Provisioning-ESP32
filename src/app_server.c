@@ -8,6 +8,12 @@
  * CONFIG_HTTPD_MAX_URI_LEN (512 B) and would overflow any fixed stack buffer
  * when prepending "/littlefs". A wildcard catch-all returns 404 for
  * any URI not in the route table. Requires uri_match_fn = wildcard.
+ *
+ * JSON
+ * ────
+ * All JSON responses are built with cJSON. Hand-rolled snprintf JSON is gone.
+ * vfs_build_status_json() and vfs_build_scan_json() (utils_filesystem) own
+ * the shared status/scan shape used by both portal and app_server.
  */
 
 #include "app_server.h"
@@ -18,21 +24,30 @@
 #include "ota_server.h"
 #include "utils_filesystem.h"
 #include "utils_web.h"
+#include "utils_json.h"
 #include "config.h"
+
 #include <dirent.h>
 #include <sys/stat.h>
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #include "esp_log.h"
 #include "esp_http_server.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
 static const char *TAG = "app_server";
 
-#define FS_BASE     "/littlefs"
+#define FS_BASE  "/littlefs"
+
+/* ── Misc API handlers ─────────────────────────────────────────────────── */
 
 /* POST /api/jserror — forward frontend exceptions to the serial log */
 static esp_err_t handle_api_jserror(httpd_req_t *req)
@@ -48,30 +63,31 @@ static esp_err_t handle_api_jserror(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── File route handlers ───────────────────────────────────────────────────*/
+/* ── File route handlers ────────────────────────────────────────────────── */
+
 static esp_err_t handle_index(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/index.html",    "text/html",             false); }
+    { return web_serve_file(req, FS_BASE "/index.html",    "text/html",              false); }
 
 static esp_err_t handle_base_css(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/base.css",      "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/base.css",      "text/css",               true); }
 
 static esp_err_t handle_index_css(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/index.css",     "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/index.css",     "text/css",               true); }
 
 static esp_err_t handle_index_js(httpd_req_t *req)
     { return web_serve_file(req, FS_BASE "/index.js",      "application/javascript", true); }
 
 static esp_err_t handle_settings(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/settings.html", "text/html",             false); }
+    { return web_serve_file(req, FS_BASE "/settings.html", "text/html",              false); }
 
 static esp_err_t handle_settings_css(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/settings.css",  "text/css",              true); }
+    { return web_serve_file(req, FS_BASE "/settings.css",  "text/css",               true); }
 
 static esp_err_t handle_settings_js(httpd_req_t *req)
     { return web_serve_file(req, FS_BASE "/settings.js",   "application/javascript", true); }
 
 static esp_err_t handle_favicon(httpd_req_t *req)
-    { return web_serve_file(req, FS_BASE "/favicon.svg",   "image/svg+xml",         true); }
+    { return web_serve_file(req, FS_BASE "/favicon.svg",   "image/svg+xml",          true); }
 
 static esp_err_t handle_404(httpd_req_t *req)
 {
@@ -79,11 +95,7 @@ static esp_err_t handle_404(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── Settings API endpoints ────────────────────────────────────────────────*/
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+/* ── Settings API ──────────────────────────────────────────────────────── */
 
 #define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
 #define SETTINGS_NVS_KEY_SSID   "ssid"
@@ -91,49 +103,39 @@ static esp_err_t handle_404(httpd_req_t *req)
 
 #define MAX_SCAN_APS  20
 
-typedef struct {
-    char ssid[33];
-    int  rssi;
-    int  quality;
-    bool secure;
-} scan_ap_t;
+/* Scan state — raw records kept so vfs_build_scan_json() can process them */
+static SemaphoreHandle_t  s_scan_mutex   = NULL;
+static wifi_ap_record_t   s_scan_recs[MAX_SCAN_APS];
+static int                s_scan_count   = 0;
+static bool               s_scan_ready   = false;
+static volatile bool      s_scan_running = false;
 
-static SemaphoreHandle_t s_scan_mutex   = NULL;
-static scan_ap_t         s_scan_aps[MAX_SCAN_APS];
-static int               s_scan_count  = 0;
-static bool              s_scan_ready  = false;
-static volatile bool     s_scan_running = false;
+static EventGroupHandle_t s_scan_evt     = NULL;
+#define SCAN_DONE_BIT  BIT0
+static bool s_events_registered = false;
 
-/* ── Scan synchronisation ─────────────────────────────────────────────────*/
-static EventGroupHandle_t s_scan_evt    = NULL;
-#define SCAN_DONE_BIT      BIT0
-static bool s_events_registered = false;  /* WiFi event handler registered once */
-
-/* Called once during app_server_start() to create the event group */
 static void scan_init(void)
 {
     if (!s_scan_evt) s_scan_evt = xEventGroupCreate();
 }
 
-/* Event handler callback — registered with esp_event_handler_register() */
 static void scan_event_cb(void *arg, esp_event_base_t base,
-                          int32_t id, void *data)
+                           int32_t id, void *data)
 {
     (void)arg; (void)data;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE)
         if (s_scan_evt) xEventGroupSetBits(s_scan_evt, SCAN_DONE_BIT);
-    }
 }
 
 static void scan_task(void *arg)
 {
+    (void)arg;
     wifi_scan_config_t cfg = {
         .show_hidden = false,
         .scan_type   = WIFI_SCAN_TYPE_ACTIVE,
     };
     s_scan_running = true;
 
-    /* Start non-blocking scan */
     if (esp_wifi_scan_start(&cfg, false) != ESP_OK) {
         ESP_LOGW(TAG, "Scan start failed");
         s_scan_running = false;
@@ -141,13 +143,9 @@ static void scan_task(void *arg)
         return;
     }
 
-    /* Wait for completion — yields CPU to httpd and other tasks */
     EventBits_t bits = xEventGroupWaitBits(
-        s_scan_evt,
-        SCAN_DONE_BIT,
-        pdTRUE,          /* clear on exit */
-        pdFALSE,
-        pdMS_TO_TICKS(6000));
+        s_scan_evt, SCAN_DONE_BIT,
+        pdTRUE, pdFALSE, pdMS_TO_TICKS(6000));
 
     if (!(bits & SCAN_DONE_BIT)) {
         ESP_LOGW(TAG, "Scan timeout");
@@ -157,48 +155,17 @@ static void scan_task(void *arg)
     }
 
     uint16_t count = MAX_SCAN_APS;
-    wifi_ap_record_t *recs = calloc(MAX_SCAN_APS, sizeof(wifi_ap_record_t));
-    if (!recs) {
-        s_scan_running = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    esp_err_t err = esp_wifi_scan_get_ap_records(&count, recs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(err));
-        free(recs);
-        s_scan_running = false;
-        vTaskDelete(NULL);
-        return;
-    }
-
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-    s_scan_count = 0;
-    for (int i = 0; i < (int)count && s_scan_count < MAX_SCAN_APS; i++) {
-        if (recs[i].ssid[0] == '\0') continue;
-
-        int si = 0;
-        for (int j = 0; recs[i].ssid[j] && j < 32; j++) {
-            char c = (char)recs[i].ssid[j];
-            if ((c == '"' || c == '\\') && si < 31)
-                s_scan_aps[s_scan_count].ssid[si++] = '\\';
-            if (si < 32) s_scan_aps[s_scan_count].ssid[si++] = c;
-        }
-        s_scan_aps[s_scan_count].ssid[si] = '\0';
-        s_scan_aps[s_scan_count].rssi    = recs[i].rssi;
-        s_scan_aps[s_scan_count].quality =
-            recs[i].rssi <= -100 ? 0 : recs[i].rssi >= -40 ? 100 :
-            2 * (recs[i].rssi + 100);
-        s_scan_aps[s_scan_count].secure  =
-            (recs[i].authmode != WIFI_AUTH_OPEN);
-        s_scan_count++;
+    esp_err_t err = esp_wifi_scan_get_ap_records(&count, s_scan_recs);
+    if (err == ESP_OK) {
+        s_scan_count = (int)count;
+        s_scan_ready = true;
+        ESP_LOGI(TAG, "Scan complete: %d APs", s_scan_count);
+    } else {
+        ESP_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(err));
     }
-    s_scan_ready = true;
     xSemaphoreGive(s_scan_mutex);
-    free(recs);
 
-    ESP_LOGI(TAG, "Scan complete: %d APs", s_scan_count);
     s_scan_running = false;
     vTaskDelete(NULL);
 }
@@ -209,35 +176,39 @@ static void trigger_scan(void)
         xTaskCreate(scan_task, "settings_scan", 4096, NULL, 3, NULL);
 }
 
-/* GET /api/status */
-static esp_err_t handle_api_status(httpd_req_t *req)
+/* ── JSON response helper ──────────────────────────────────────────────── */
+
+/**
+ * Serialise a cJSON object to a heap buffer, send it, then free both.
+ * Sets Content-Type: application/json and Cache-Control: no-cache.
+ * Returns ESP_OK even on cJSON serialisation failure (sends 500 instead).
+ */
+static esp_err_t send_json(httpd_req_t *req, cJSON *obj)
 {
-    wifi_ap_record_t ap  = {0};
-    bool connected       = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK);
-    char ip[16]          = {0};
-    char ssid[33]        = {0};
-
-    if (connected) {
-        esp_netif_ip_info_t info = {0};
-        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (netif) esp_netif_get_ip_info(netif, &info);
-        snprintf(ip,   sizeof(ip),   IPSTR, IP2STR(&info.ip));
-        snprintf(ssid, sizeof(ssid), "%s",  (char *)ap.ssid);
+    if (!obj) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
     }
-
+    char *body = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!body) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-
-    char buf[160];
-    snprintf(buf, sizeof(buf),
-        "{\"connected\":%s,\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d}",
-        connected ? "true" : "false", ssid, ip,
-        connected ? (int)ap.rssi : 0);
-    httpd_resp_sendstr(req, buf);
+    httpd_resp_sendstr(req, body);
+    free(body);
     return ESP_OK;
 }
 
-/* GET /api/scan   -  ?refresh=1 triggers a new scan */
+/* GET /api/status */
+static esp_err_t handle_api_status(httpd_req_t *req)
+{
+    return send_json(req, vfs_build_status_json());
+}
+
+/* GET /api/scan  —  ?refresh=1 triggers a new scan */
 static esp_err_t handle_api_scan(httpd_req_t *req)
 {
     char query[16] = {0};
@@ -245,35 +216,17 @@ static esp_err_t handle_api_scan(httpd_req_t *req)
         strstr(query, "refresh=1"))
         trigger_scan();
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-
     if (!s_scan_ready || s_scan_running) {
-        httpd_resp_sendstr(req, "{\"status\":\"scanning\"}");
-        return ESP_OK;
+        cJSON *scanning = cJSON_CreateObject();
+        cJSON_AddStringToObject(scanning, "status", "scanning");
+        return send_json(req, scanning);
     }
 
-    char *buf = malloc(MAX_SCAN_APS * 100 + 8);
-    if (!buf) { httpd_resp_send_500(req); return ESP_OK; }
-
-    int pos = 0;
-    buf[pos++] = '[';
     xSemaphoreTake(s_scan_mutex, portMAX_DELAY);
-    for (int i = 0; i < s_scan_count; i++) {
-        pos += snprintf(buf + pos, MAX_SCAN_APS * 100 - pos,
-            "%s{\"ssid\":\"%s\",\"quality\":%d,\"secure\":%s}",
-            i ? "," : "",
-            s_scan_aps[i].ssid,
-            s_scan_aps[i].quality,
-            s_scan_aps[i].secure ? "true" : "false");
-    }
+    cJSON *arr = vfs_build_scan_json(s_scan_recs, s_scan_count);
     xSemaphoreGive(s_scan_mutex);
-    buf[pos++] = ']';
-    buf[pos]   = '\0';
 
-    httpd_resp_sendstr(req, buf);
-    free(buf);
-    return ESP_OK;
+    return send_json(req, arr);
 }
 
 /* POST /api/connect */
@@ -281,10 +234,13 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
 {
     char body[320] = {0};
     int n = httpd_req_recv(req, body, sizeof(body) - 1);
-    if (n <= 0) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty"); return ESP_OK; }
+    if (n <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty");
+        return ESP_OK;
+    }
 
     char ssid_enc[128] = {0}, pass_enc[128] = {0};
-    char ssid[64] = {0}, pass[64] = {0};
+    char ssid[64]      = {0}, pass[64]      = {0};
 
     const char *p;
     if ((p = strstr(body, "ssid=")) != NULL) {
@@ -304,7 +260,10 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     web_url_decode(ssid_enc, ssid, sizeof(ssid));
     web_url_decode(pass_enc, pass, sizeof(pass));
 
-    if (!ssid[0]) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required"); return ESP_OK; }
+    if (!ssid[0]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID required");
+        return ESP_OK;
+    }
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs);
@@ -342,7 +301,7 @@ static esp_err_t handle_api_erase(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ── WebSocket client tracking ─────────────────────────────────────────────*/
+/* ── WebSocket client tracking ─────────────────────────────────────────── */
 #define MAX_WS_CLIENTS 4
 
 static httpd_handle_t    s_httpd    = NULL;
@@ -377,19 +336,12 @@ static void ws_client_remove(int fd)
 
 /* ── WebSocket protocol ────────────────────────────────────────────────────
  *
- * Two message types share the same handler:
- *
- * TEXT frames  -  infrequent control words (arm, disarm, ping, stop, led:N)
- *   These are sent rarely enough that string parsing cost is irrelevant.
- *   pong response is also TEXT.
- *
- * BINARY frames  -  high-frequency axes packets (every send tick, up to 100 Hz)
+ * TEXT frames  —  infrequent control words (arm, disarm, ping, stop, led:N)
+ * BINARY frames — high-frequency axes packets (up to 100 Hz)
  *   Format: 5 bytes, little-endian
  *     [0]     uint8  type = 0x01
- *     [1..2]  int16  x * 10000   (range -10000..10000 = -1.0..1.0, 0.0001 res)
+ *     [1..2]  int16  x * 10000   (range -10000..10000 → -1.0..1.0)
  *     [3..4]  int16  y * 10000
- *   No string allocation, no sscanf  -  just two array reads and two multiplies.
- *   Resolution of 0.0001 is well below the motor driver's meaningful step size.
  */
 #define WS_MSG_AXES  0x01
 
@@ -434,18 +386,13 @@ static void dispatch_binary(const uint8_t *data, size_t len)
 {
     if (len < 5 || data[0] != WS_MSG_AXES) return;
 
-    /* Read two little-endian int16 values */
     int16_t ix = (int16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8));
     int16_t iy = (int16_t)((uint16_t)data[3] | ((uint16_t)data[4] << 8));
 
-    float x = ix * 0.0001f;
-    float y = iy * 0.0001f;
-
     ctrl_drive_feed_watchdog();
-    ctrl_drive_set_axes(x, y);
+    ctrl_drive_set_axes(ix * 0.0001f, iy * 0.0001f);
 }
 
-/* ── WebSocket handler ─────────────────────────────────────────────────────*/
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
@@ -468,9 +415,8 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
     if (frame.len == 0) return ESP_OK;
 
-    /* Binary axes packet  -  no allocation, direct dispatch */
     if (frame.type == HTTPD_WS_TYPE_BINARY) {
-        if (frame.len > 16) return ESP_OK;   /* sanity: axes packet is 5 bytes */
+        if (frame.len > 16) return ESP_OK;
         uint8_t bin[16];
         frame.payload = bin;
         err = httpd_ws_recv_frame(req, &frame, frame.len);
@@ -480,74 +426,18 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
     if (frame.type != HTTPD_WS_TYPE_TEXT) return ESP_OK;
 
-    /* Text control message  -  allocate only for infrequent words */
     uint8_t *buf = calloc(1, frame.len + 1);
     if (!buf) return ESP_ERR_NO_MEM;
-
     frame.payload = buf;
     err = httpd_ws_recv_frame(req, &frame, frame.len);
     if (err != ESP_OK) { free(buf); ws_client_remove(fd); return err; }
     buf[frame.len] = '\0';
-
     dispatch_text(req, (char *)buf);
     free(buf);
     return ESP_OK;
 }
 
-/* ── Public API ────────────────────────────────────────────────────────────*/
-
-/* ── LittleFS inventory (called once at startup) ───────────────────────────
- * Logs every file in /littlefs so you can confirm .gz assets are present.
- * Output appears in the serial monitor tagged [app_srv] at INFO level.
- * Example:
- *   [app_srv] FS: /littlefs/index.js        ( 20325 B)
- *   [app_srv] FS: /littlefs/index.js.gz     (  5706 B)  ← gz present, will be served
- *   [app_srv] FS: /littlefs/base.css         (  7822 B)
- *   [app_srv] FS: /littlefs/base.css.gz      (  1704 B)  ← gz present, will be served
- */
-static void log_fs_inventory(void)
-{
-    DIR *dir = opendir("/littlefs");
-    if (!dir) {
-        ESP_LOGW(TAG, "FS: cannot open /littlefs - is LittleFS mounted?");
-        return;
-    }
-
-    ESP_LOGI(TAG, "FS: --- LittleFS contents ---");
-
-    /* Declare all locals before the loop body (C89/C99 compat) */
-    size_t         total    = 0;
-    int            count    = 0;
-    struct dirent *entry    = NULL;
-    char           full[300];  /* big enough for "/littlefs/" + filename + ".gz" */
-    struct stat    st;
-    size_t         sz       = 0;
-    size_t         dname_len = 0;
-    bool           is_gz    = false;
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type != DT_REG) continue;  /* skip . .. and subdirs */
-
-        snprintf(full, sizeof(full), "/littlefs/%s", entry->d_name);
-
-        sz = 0;
-        if (stat(full, &st) == 0) sz = (size_t)st.st_size;
-
-        /* Guard strlen subtraction — size_t underflows if name is < 3 chars */
-        dname_len = strlen(entry->d_name);
-        is_gz     = (dname_len > 3 &&
-                     strcmp(entry->d_name + dname_len - 3, ".gz") == 0);
-
-        ESP_LOGI(TAG, "FS:   %-30s %6zu B%s",
-                 entry->d_name, sz,
-                 is_gz ? "  [gz - will be served compressed]" : "");
-        total += sz;
-        count++;
-    }
-    closedir(dir);
-
-    ESP_LOGI(TAG, "FS: --- %d files, %zu B total ---", count, total);
-}
+/* ── Public API ─────────────────────────────────────────────────────────── */
 
 esp_err_t app_server_start(void)
 {
@@ -561,23 +451,20 @@ esp_err_t app_server_start(void)
                                    scan_event_cb, NULL);
         s_events_registered = true;
     }
+
     esp_err_t ret = vfs_mount_littlefs();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to mount LittleFS, aborting server start.");
-        /* Clean up semaphores to avoid leak on retry */
-        if (s_ws_mutex)   { vSemaphoreDelete(s_ws_mutex);   s_ws_mutex = NULL; }
+        ESP_LOGE(TAG, "Failed to mount LittleFS — aborting server start");
+        if (s_ws_mutex)   { vSemaphoreDelete(s_ws_mutex);   s_ws_mutex   = NULL; }
         if (s_scan_mutex) { vSemaphoreDelete(s_scan_mutex); s_scan_mutex = NULL; }
         return ret;
     }
-    log_fs_inventory();   /* logs all files + gz status to serial */
+    vfs_log_inventory();   /* replaces log_fs_inventory() — now in utils_filesystem */
 
-    httpd_config_t cfg    = HTTPD_DEFAULT_CONFIG();
+    httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers  = 20;
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
-    /* Performance: allow browser to open concurrent asset connections.
-     * Tight recv/send timeouts prevent dead connections blocking the task.
-     * Default max_open_sockets is 7 on ESP32  -  keep it; just make timeouts fast. */
     cfg.recv_wait_timeout = 5;
     cfg.send_wait_timeout = 5;
     cfg.backlog_conn      = 5;
@@ -589,23 +476,23 @@ esp_err_t app_server_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        { .uri="/",              .method=HTTP_GET,  .handler=handle_index       },
+        { .uri="/",              .method=HTTP_GET,  .handler=handle_index        },
         { .uri="/base.css",      .method=HTTP_GET,  .handler=handle_base_css     },
-        { .uri="/index.css",     .method=HTTP_GET,  .handler=handle_index_css         },
-        { .uri="/index.js",     .method=HTTP_GET,  .handler=handle_index_js          },
-        { .uri="/settings",      .method=HTTP_GET,  .handler=handle_settings    },
-        { .uri="/settings.css",  .method=HTTP_GET,  .handler=handle_settings_css},
-        { .uri="/settings.js",   .method=HTTP_GET,  .handler=handle_settings_js },
-        { .uri="/favicon.ico",   .method=HTTP_GET,  .handler=handle_favicon     },
-        { .uri="/favicon.svg",   .method=HTTP_GET,  .handler=handle_favicon     },
-        { .uri="/api/status",    .method=HTTP_GET,  .handler=handle_api_status  },
-        { .uri="/api/scan",      .method=HTTP_GET,  .handler=handle_api_scan    },
-        { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect },
-        { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase   },
+        { .uri="/index.css",     .method=HTTP_GET,  .handler=handle_index_css    },
+        { .uri="/index.js",      .method=HTTP_GET,  .handler=handle_index_js     },
+        { .uri="/settings",      .method=HTTP_GET,  .handler=handle_settings     },
+        { .uri="/settings.css",  .method=HTTP_GET,  .handler=handle_settings_css },
+        { .uri="/settings.js",   .method=HTTP_GET,  .handler=handle_settings_js  },
+        { .uri="/favicon.ico",   .method=HTTP_GET,  .handler=handle_favicon      },
+        { .uri="/favicon.svg",   .method=HTTP_GET,  .handler=handle_favicon      },
+        { .uri="/api/status",    .method=HTTP_GET,  .handler=handle_api_status   },
+        { .uri="/api/scan",      .method=HTTP_GET,  .handler=handle_api_scan     },
+        { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect  },
+        { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase    },
         { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
-          .is_websocket=true                                                     },
-        { .uri="/api/jserror",   .method=HTTP_POST, .handler=handle_api_jserror },
-        { .uri="/*",             .method=HTTP_GET,  .handler=handle_404         },
+          .is_websocket=true                                                      },
+        { .uri="/api/jserror",   .method=HTTP_POST, .handler=handle_api_jserror  },
+        { .uri="/*",             .method=HTTP_GET,  .handler=handle_404          },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);

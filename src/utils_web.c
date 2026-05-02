@@ -5,19 +5,53 @@
 #include <string.h>
 
 /*
-web_utils should own:
-HTTP response patterns
-file serving
-query parsing
-small utilities
-It should NOT own:
-complex JSON formatting → delegate to cJSON
-*/
+ * utils_web.c — HTTP response helpers and file serving.
+ *
+ * Owns:
+ *   - Standard response headers
+ *   - File serving with optional gzip (Accept-Encoding-aware)
+ *   - URL decode
+ *   - Small text response helper
+ *
+ * Does NOT own:
+ *   - JSON formatting → use cJSON via utils_filesystem helpers
+ *   - Filesystem mounting → utils_filesystem.c
+ *
+ * ── gzip and Android ────────────────────────────────────────────────────────
+ * Android's captive-portal WebView (CaptivePortalLogin APK) and some mobile
+ * browsers send requests WITHOUT "Accept-Encoding: gzip", or with a
+ * restricted accept list. Serving a gzip body to such a client produces
+ * garbled binary output. Desktop Chrome always advertises gzip support, which
+ * is why the issue only appears on Android.
+ *
+ * Fix: check the Accept-Encoding request header before preferring the .gz
+ * file. If the client did not advertise gzip support, fall through to the
+ * plain file even when a .gz sibling exists.
+ */
 
 static const char *TAG = "web_utils";
 #define SERVE_CHUNK 8192
 
-//small response helper
+/* ── Internal: Accept-Encoding check ───────────────────────────────────── */
+
+/**
+ * Returns true if the request's Accept-Encoding header contains "gzip".
+ * Falls back to false on any error (header absent, buffer too small, etc.)
+ * so we always degrade gracefully to the uncompressed file.
+ */
+static bool client_accepts_gzip(httpd_req_t *req)
+{
+    /* 128 bytes is enough for any realistic Accept-Encoding value.
+     * "gzip, deflate, br, zstd" is ~24 chars; even padded with extras it fits. */
+    char ae[128] = {0};
+    esp_err_t err = httpd_req_get_hdr_value_str(req, "Accept-Encoding",
+                                                 ae, sizeof(ae));
+    if (err != ESP_OK) return false;          /* header absent → no gzip */
+    return (strstr(ae, "gzip") != NULL);
+}
+
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
 esp_err_t web_send_text(httpd_req_t *req, const char *text)
 {
     web_set_standard_headers(req, "text/plain", false);
@@ -36,27 +70,26 @@ void web_set_standard_headers(httpd_req_t *req, const char *mime, bool is_asset)
 }
 
 esp_err_t web_serve_file(httpd_req_t *req, const char *path,
-                        const char *mime, bool is_asset)
+                         const char *mime, bool is_asset)
 {
-    char gz_path[128];
-    bool use_gz = false;
-    FILE *f = NULL;
+    char  gz_path[128];
+    bool  use_gz = false;
+    FILE *f      = NULL;
 
-    // Check for Gzip variant
-    if (strlen(path) < sizeof(gz_path) - 4)
-    {
+    /* Only attempt the .gz variant when the client declared gzip support.
+     * This is the fix for Android WebView / captive-portal browser sending
+     * requests without Accept-Encoding: gzip. */
+    if (client_accepts_gzip(req) && strlen(path) < sizeof(gz_path) - 4) {
         snprintf(gz_path, sizeof(gz_path), "%s.gz", path);
         f = fopen(gz_path, "rb");
         if (f) use_gz = true;
     }
 
-    if (!f)
-    {
+    if (!f) {
         f = fopen(path, "rb");
     }
 
-    if (!f)
-    {
+    if (!f) {
         ESP_LOGE(TAG, "File not found: %s", path);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
         return ESP_OK;
@@ -68,7 +101,7 @@ esp_err_t web_serve_file(httpd_req_t *req, const char *path,
         fclose(f);
         return httpd_resp_send_500(req);
     }
-    if (file_size > 256 * 1024) {   // pick a sane upper bound
+    if (file_size > 256 * 1024) {
         ESP_LOGE(TAG, "File too large to serve: %s (%ld B)", path, file_size);
         fclose(f);
         return httpd_resp_send_500(req);
@@ -76,47 +109,37 @@ esp_err_t web_serve_file(httpd_req_t *req, const char *path,
     rewind(f);
 
     web_set_standard_headers(req, mime, is_asset);
-    if (use_gz)
-    {
+    if (use_gz) {
         httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     }
 
-    // Optimization: Single send for small files (avoids chunking overhead)
-    // Most your assets are <8KB gzipped[cite: 3]
-    if (file_size <= SERVE_CHUNK)
-    {
-        char *buf = malloc(file_size);
-        if (buf)
-        {
-            size_t r = fread(buf, 1, file_size, f);
-            if (r != file_size) {
-                free(buf);
-                fclose(f);
-                return httpd_resp_send_500(req);
-            }
-            httpd_resp_send(req, buf, file_size);
+    /* Single send for small files — avoids chunked-transfer overhead.
+     * Most assets are <8 KB gzipped. */
+    if (file_size <= SERVE_CHUNK) {
+        char *buf = malloc((size_t)file_size);
+        if (!buf) {
+            fclose(f);
+            return httpd_resp_send_500(req);
+        }
+        size_t r = fread(buf, 1, (size_t)file_size, f);
+        if (r != (size_t)file_size) {
             free(buf);
-        }
-        else
-        {
             fclose(f);
             return httpd_resp_send_500(req);
         }
-    }
-    else
-    {
-        // Chunked transfer for larger files
-        // NOTE: No Content-Length set here to avoid HTTP/1.1 conflicts[cite: 3]
+        httpd_resp_send(req, buf, (ssize_t)file_size);
+        free(buf);
+    } else {
+        /* Chunked transfer for larger files.
+         * No Content-Length header set — avoids HTTP/1.1 conflicts with
+         * chunked encoding. */
         char *buf = malloc(SERVE_CHUNK);
-        if (!buf)
-        {
+        if (!buf) {
             fclose(f);
             return httpd_resp_send_500(req);
         }
-
         size_t n;
-        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0)
-        {
+        while ((n = fread(buf, 1, SERVE_CHUNK, f)) > 0) {
             httpd_resp_send_chunk(req, buf, (ssize_t)n);
         }
         httpd_resp_send_chunk(req, NULL, 0);
@@ -130,21 +153,15 @@ esp_err_t web_serve_file(httpd_req_t *req, const char *path,
 void web_url_decode(const char *src, char *dst, int dst_size)
 {
     int out = 0;
-    while (*src && out < dst_size - 1)
-    {
-        if (src[0] == '%' && src[1] && src[2])
-        {
+    while (*src && out < dst_size - 1) {
+        if (src[0] == '%' && src[1] && src[2]) {
             char hex[3] = { src[1], src[2], '\0' };
-            dst[out++] = (char)strtol(hex, NULL, 16);
+            dst[out++]  = (char)strtol(hex, NULL, 16);
             src += 3;
-        }
-        else if (src[0] == '+')
-        {
+        } else if (src[0] == '+') {
             dst[out++] = ' ';
             src++;
-        }
-        else
-        {
+        } else {
             dst[out++] = *src++;
         }
     }
