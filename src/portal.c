@@ -101,26 +101,65 @@ static void scan_bg_task(void *arg)
 static int           s_dns_sock = -1;
 static volatile bool s_dns_run  = false;
 
+typedef struct __attribute__((packed)) {
+    uint16_t id;
+    uint16_t flags;
+    uint16_t questions;
+    uint16_t answers;
+    uint16_t authority;
+    uint16_t additional;
+} dns_header_t;
+
 static void dns_reply(int sock, struct sockaddr_in *client,
                       const uint8_t *query, int qlen)
 {
     if (qlen < 12 || qlen > 496) return;
 
-    uint8_t  resp[512];
-    uint32_t gw = inet_addr(AP_GW_IP);
-    memcpy(resp, query, qlen);
-    resp[2] = 0x81; resp[3] = 0x80;
-    resp[6] = 0x00; resp[7] = 0x01;
-    resp[8] = resp[9] = resp[10] = resp[11] = 0;
+    /* Only respond to queries (QR bit = 0); drop responses. */
+    uint16_t flags_in;
+    memcpy(&flags_in, query + 2, 2);
+    if (ntohs(flags_in) & 0x8000) return;
 
+    /* Resolve AP IP dynamically */
+    uint32_t gw = inet_addr(AP_GW_IP);
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (netif) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK)
+            gw = ip_info.ip.addr;
+    }
+
+    uint8_t resp[512];
+    memcpy(resp, query, qlen);
+
+    /* Patch header using proper struct — clear and set fields explicitly */
+    dns_header_t *hdr = (dns_header_t *)resp;
+    hdr->flags   = htons(0x8180);   /* QR=1, Opcode=0000, AA=1, TC=0, RD=1, RA=1, Z=000, RCODE=0 */
+    hdr->answers = htons(1);         /* One A-record answer */
+    hdr->authority  = htons(0);
+    hdr->additional = htons(0);
+
+    /* Append A-record answer at end of query */
     int pos = qlen;
-    resp[pos++] = 0xC0; resp[pos++] = 0x0C;
+
+    /* NAME: compressed pointer to question name at offset 12 */
+    resp[pos++] = 0xC0;
+    resp[pos++] = 0x0C;
+
+    /* TYPE A (1), CLASS IN (1) */
     resp[pos++] = 0x00; resp[pos++] = 0x01;
     resp[pos++] = 0x00; resp[pos++] = 0x01;
+
+    /* TTL: 300 seconds (big-endian) */
     resp[pos++] = 0x00; resp[pos++] = 0x00;
-    resp[pos++] = 0x00; resp[pos++] = 0x3C;
+    resp[pos++] = 0x01; resp[pos++] = 0x2C;
+
+    /* RDLENGTH: 4 bytes */
     resp[pos++] = 0x00; resp[pos++] = 0x04;
-    memcpy(resp + pos, &gw, 4); pos += 4;
+
+    /* RDATA: IPv4 address (network byte order — already in .addr) */
+    memcpy(resp + pos, &gw, 4);
+    pos += 4;
 
     sendto(sock, resp, pos, 0,
            (struct sockaddr *)client, sizeof(*client));
@@ -136,8 +175,19 @@ static void dns_task(void *arg)
     while (s_dns_run) {
         int n = recvfrom(s_dns_sock, buf, sizeof(buf), 0,
                          (struct sockaddr *)&client, &clen);
+
+        if (n < 0) {
+            /* Socket closed by stop_dns() or timeout — check if we're stopping */
+            if (!s_dns_run) break;
+            if (errno == EWOULDBLOCK || errno == EAGAIN) continue;
+            /* Other error (e.g. EBADF after close) — exit task */
+            ESP_LOGW(TAG, "DNS recvfrom error %d, exiting", errno);
+            break;
+        }
         if (n > 0) dns_reply(s_dns_sock, &client, buf, n);
     }
+
+    s_dns_run = false;  /* Signal clean exit */
     vTaskDelete(NULL);
 }
 
@@ -168,11 +218,66 @@ static void start_dns(void)
 static void stop_dns(void)
 {
     s_dns_run = false;
-    if (s_dns_sock >= 0) { close(s_dns_sock); s_dns_sock = -1; }
-    vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* Close socket FIRST to unblock recvfrom() immediately with EBADF/EINTR */
+    int sock = s_dns_sock;
+    s_dns_sock = -1;
+    if (sock >= 0) {
+        shutdown(sock, SHUT_RDWR);  /* Unblock recvfrom */
+        close(sock);
+    }
+
+    /* Brief delay for task self-deletion */
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
-/* ── JSON response helper ───────────────────────────────────────────────── */
+/* ── DHCP Option 114 — RFC 8910 captive-portal URI advertisement ─────────────
+ *
+ * Injects the portal URL into DHCP offers/acks so that RFC-8910-aware clients
+ * (modern iOS, Android 11+) display the "Sign in to network" prompt immediately
+ * on association, without waiting for HTTP probe heuristics.
+ *
+ * Called once from portal_start() after the AP netif is up.
+ */
+static void set_dhcp_option_114(void)
+{
+    /* Build the portal URI string once. */
+    char uri[64];
+    snprintf(uri, sizeof(uri), "http://" AP_GW_IP "/");
+
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (!ap_netif) {
+        ESP_LOGW(TAG, "DHCP opt114: AP netif not found, skipping");
+        return;
+    }
+
+    /* Stop DHCP server temporarily to apply options, then restart. */
+    esp_netif_dhcps_stop(ap_netif);
+
+    /* Option 114 value: length-prefixed string as expected by esp_netif. */
+    uint8_t opt_buf[65];
+    size_t  uri_len = strlen(uri);
+    if (uri_len > 63) uri_len = 63;
+    opt_buf[0] = (uint8_t)uri_len;
+    memcpy(opt_buf + 1, uri, uri_len);
+
+    esp_err_t err = esp_netif_dhcps_option(
+        ap_netif,
+        ESP_NETIF_OP_SET,
+        ESP_NETIF_CAPTIVEPORTAL_URI,   /* DHCP option 114 */
+        opt_buf,
+        (uint32_t)(uri_len + 1)
+    );
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "DHCP opt114 set failed: %s (non-fatal)", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "DHCP Option 114 set → %s", uri);
+    }
+
+    esp_netif_dhcps_start(ap_netif);
+}
+
+
 
 static esp_err_t send_json(httpd_req_t *req, cJSON *obj)
 {
@@ -204,82 +309,142 @@ static esp_err_t handle_setup_css(httpd_req_t *req)
 static esp_err_t handle_setup_js(httpd_req_t *req)
     { return web_serve_file(req, FS_BASE "/setup.js",    "application/javascript", true); }
 
-/* ── Captive-portal probe handler ───────────────────────────────────────────
- *
- * Triggers the system captive-portal UI on iOS, Android, Windows, Linux,
- * and Firefox. See inline comments for per-OS behaviour.
+/* ── Windows NCSI probe ──────────────────────────────────────────────────
+ * Windows expects 200 + "Microsoft Connect Test" for real internet.
+ * For captive portal: return 302 redirect, BUT the response must be
+ * valid enough that NCSI's "ActiveHttpProbeFailedHotspotDetected" fires.
  */
-static esp_err_t handle_probe(httpd_req_t *req)
+static esp_err_t handle_connecttest(httpd_req_t *req)
 {
-    const char *uri = req->uri;
+    ESP_LOGI(TAG, "Probe: Windows NCSI %s", req->uri);
 
-    /* iOS / macOS CNA */
-    if (strcmp(uri, "/hotspot-detect.html")       == 0 ||
-        strcmp(uri, "/library/test/success.html") == 0 ||
-        strcmp(uri, "/ captive.apple.com")        == 0) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
-        httpd_resp_set_hdr(req, "Content-Length", "0");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
+    /* Try to serve setup.html from LittleFS first */
+    const char *setup_path = FS_BASE "/setup.html";
+    FILE *f = fopen(setup_path, "r");
+    if (f) {
+        /* Get file size */
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        if (fsize > 0 && fsize < 16384) {  /* Sanity check */
+            char *buf = malloc(fsize + 1);
+            if (buf) {
+                size_t n = fread(buf, 1, fsize, f);
+                fclose(f);
+
+                if (n == (size_t)fsize) {
+                    buf[fsize] = '\0';
+
+                    httpd_resp_set_status(req, "200 OK");
+                    httpd_resp_set_type(req, "text/html");
+                    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+                    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+                    httpd_resp_set_hdr(req, "Connection", "close");
+
+                    httpd_resp_sendstr(req, buf);
+                    free(buf);
+
+                    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+                    return ESP_OK;
+                }
+                free(buf);
+            } else {
+                fclose(f);
+            }
+        } else {
+            fclose(f);
+        }
     }
 
-    /* Android — 302 (not 204) to trigger captive portal notification */
-    if (strcmp(uri, "/generate_204") == 0 ||
-        strcmp(uri, "/gen_204")      == 0) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
-        httpd_resp_set_hdr(req, "Content-Length", "0");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
+    /* Fallback: inline minimal portal HTML if file read fails */
+    ESP_LOGW(TAG, "Failed to read %s, using fallback HTML", setup_path);
 
-    /* Windows NCSI — wrong body forces captive detection */
-    if (strcmp(uri, "/connecttest.txt") == 0 ||
-        strcmp(uri, "/ncsi.txt")        == 0) {
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "captive");
-        return ESP_OK;
-    }
-    if (strcmp(uri, "/redirect") == 0) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "http://www.msftconnecttest.com/redirect");
-        httpd_resp_set_hdr(req, "Content-Length", "0");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "close");
 
-    /* Windows 11 */
-    if (strcmp(uri, "/captiveportal/generate_204") == 0) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
-        httpd_resp_set_hdr(req, "Content-Length", "0");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
+    const char *fallback =
+        "<!DOCTYPE html>"
+        "<html><head>"
+        "<meta charset=\"UTF-8\">"
+        "<title>Robot Setup</title>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<style>"
+        "body{font-family:system-ui,sans-serif;max-width:400px;margin:2rem auto;padding:0 1rem}"
+        "input{width:100%;padding:.5rem;margin:.5rem 0;box-sizing:border-box}"
+        "button{width:100%;padding:.75rem;background:#0078d4;color:#fff;border:none;cursor:pointer}"
+        "</style></head><body>"
+        "<h1>Robot WiFi Setup</h1>"
+        "<form action=\"/api/connect\" method=\"POST\">"
+        "<label>SSID:<input type=\"text\" name=\"ssid\" required></label>"
+        "<label>Password:<input type=\"password\" name=\"password\"></label>"
+        "<button type=\"submit\">Connect</button>"
+        "</form>"
+        "<p><a href=\"/api/scan\">Scan for networks</a></p>"
+        "</body></html>";
 
-    /* Linux / NetworkManager */
-    if (strcmp(uri, "/nm-check.txt")             == 0 ||
-        strcmp(uri, "/check_network_status.txt") == 0) {
-        httpd_resp_set_type(req, "text/plain");
-        httpd_resp_sendstr(req, "captive");
-        return ESP_OK;
-    }
+    httpd_resp_sendstr(req, fallback);
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    return ESP_OK;
+}
 
-    /* Firefox */
-    if (strcmp(uri, "/canonical.html") == 0 ||
-        strcmp(uri, "/success.txt")    == 0) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
-        httpd_resp_set_hdr(req, "Content-Length", "0");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
+/* ── Android/Google probe ────────────────────────────────────────────────
+ * Android expects 204 No Content for real internet.
+ * For captive portal: ANY non-204 status triggers detection.
+ * But Android 10+ requires the response to be "followable" —
+ * a 302 with Location header should work, but some OEMs (Samsung)
+ * need a 200 with portal HTML to auto-launch the captive portal app.
+ */
+static esp_err_t handle_generate_204(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Probe: Android %s", req->uri);
 
-    /* Wildcard — any other request → redirect to setup page */
+    /* Return 302 redirect — CaptivePortalLogin follows this automatically */
+    char url[64];
+    snprintf(url, sizeof(url), "http://" AP_GW_IP "/");
+
     httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", "http://" AP_GW_IP "/");
-    httpd_resp_send(req, NULL, 0);
+    httpd_resp_set_hdr(req, "Location", url);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "close");
+
+    /* Minimal body — some Android versions check content-length */
+    httpd_resp_sendstr(req, "<html><body>Redirecting...</body></html>");
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
+    return ESP_OK;
+}
+
+/* ── Generic catch-all (iOS, Firefox, Chrome, unknown) ─────────────────── */
+static esp_err_t handle_generic(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Probe: Generic %s", req->uri);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://" AP_GW_IP "/");
+
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", url);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(req, "Connection", "close");
+
+    /* Non-empty body required — empty body causes iOS/Android to ignore */
+    const char *body =
+        "<!DOCTYPE html><html><head>"
+        "<meta http-equiv=\"refresh\" content=\"0;url=%s\">"
+        "<title>Redirecting</title></head><body>"
+        "<p>Redirecting to <a href=\"%s\">captive portal</a>...</p>"
+        "<script>window.location.replace('%s');</script>"
+        "</body></html>";
+
+    char html[512];
+    snprintf(html, sizeof(html), body, url, url, url);
+    httpd_resp_sendstr(req, html);
+
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
     return ESP_OK;
 }
 
@@ -357,7 +522,9 @@ static esp_err_t handle_connect(httpd_req_t *req)
     ESP_LOGI(TAG, "Credentials received: SSID='%s'", s_ssid);
 
     httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Connection", "close");
     httpd_resp_sendstr(req, "Saved. Connecting...");
+    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
 
     xEventGroupSetBits(s_event_group, CREDS_RECEIVED_BIT);
     return ESP_OK;
@@ -369,7 +536,7 @@ static httpd_handle_t s_httpd = NULL;
 static void start_httpd(void)
 {
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 24;
+    cfg.max_uri_handlers  = 48; /* expanded: explicit GET+HEAD per probe + wildcards */
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
     cfg.recv_wait_timeout = 5;
@@ -396,21 +563,32 @@ static void start_httpd(void)
         { .uri="/api/rescan",  .method=HTTP_GET,  .handler=handle_rescan     },
         { .uri="/api/connect", .method=HTTP_POST, .handler=handle_connect    },
 
-        /* OS captive portal probes — explicit before wildcard */
-        { .uri="/hotspot-detect.html",       .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/library/test/success.html", .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/generate_204",              .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/gen_204",                   .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/connecttest.txt",           .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/ncsi.txt",                  .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/redirect",                  .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/captiveportal/generate_204",.method=HTTP_GET, .handler=handle_probe },
-        { .uri="/nm-check.txt",              .method=HTTP_GET, .handler=handle_probe },
-        { .uri="/canonical.html",            .method=HTTP_GET, .handler=handle_probe },
+        /* === OS-SPECIFIC CAPTIVE PORTAL PROBES === */
+        /* Android — MUST be before wildcard. Returns 200 (not 302) for /generate_204 */
+        { .uri="/generate_204",  .method=HTTP_GET,  .handler=handle_generate_204 },
+        { .uri="/generate204",   .method=HTTP_GET,  .handler=handle_generate_204 },
+        { .uri="/gen_204",       .method=HTTP_GET,  .handler=handle_generate_204 },
+
+        /* Windows NCSI — MUST be before wildcard */
+        { .uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_connecttest },
+        { .uri="/ncsi.txt",        .method=HTTP_GET,  .handler=handle_connecttest },
+
+        /* iOS/macOS */
+        { .uri="/hotspot-detect.html",       .method=HTTP_GET,  .handler=handle_generic },
+        { .uri="/library/test/success.html", .method=HTTP_GET,  .handler=handle_generic },
+
+        /* Firefox */
+        { .uri="/success.txt", .method=HTTP_GET,  .handler=handle_generic },
+        { .uri="/canonical.html", .method=HTTP_GET, .handler=handle_generic },
+
+        /* Chrome/Chromium network time */
+        { .uri="/browsernetworktime/*", .method=HTTP_GET, .handler=handle_generic },
+        /* In your routes array, add /redirect */
+        { .uri="/redirect",        .method=HTTP_GET,  .handler=handle_connecttest },
 
         /* Wildcard catch-all — MUST BE LAST */
-        { .uri="/*", .method=HTTP_GET,  .handler=handle_probe },
-        { .uri="/*", .method=HTTP_HEAD, .handler=handle_probe },
+        { .uri="/*", .method=HTTP_GET,  .handler=handle_generic  },
+        { .uri="/*", .method=HTTP_HEAD, .handler=handle_generic  },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
@@ -431,6 +609,7 @@ void portal_start(const char *ap_ssid)
     vfs_mount_littlefs();
     start_httpd();
     start_dns();
+    set_dhcp_option_114(); /* RFC 8910: advertise portal URI in DHCP offers */
 
     /* One blocking scan at startup — safe, no clients yet */
     run_scan_once();
