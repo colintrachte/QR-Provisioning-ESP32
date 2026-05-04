@@ -350,7 +350,7 @@ _These prevent bricks and make field debugging possible. Do these first._
 - [ ] **🔴S Task + heap watchdogs** — Enable FreeRTOS task watchdog (5 s timeout) and heap corruption detection. Catches infinite loops and memory corruption without physical reset.
 - [ ] **🔴S Embed frontend into firmware binary** — Gzip SPA at build time, convert to C byte array. Serve from ROM. One OTA updates everything; no more "forgot `uploadfs`" failures.
 - [ ] **🔵M Persistent event logging** — Compressed JSONL ring buffer on flash (last 5 sessions, ~100 KB each). Browsable/downloadable from UI. Optional remote syslog. Debug field issues without a serial cable.
-- [ ] **🔵S Factory reset from UI** — Settings page button + GPIO0 hold → erase WiFi creds, reset to defaults, reboot into portal. Currently only GPIO0 works.
+- [X] **🔵S Factory reset from UI** — Settings page button + GPIO0 hold → erase WiFi creds, reset to defaults, reboot into portal. Currently only GPIO0 works.
 - [ ] **🔵S Graceful WS shutdown before OTA reboot** — Close the HTTP server and send WS close frames before `esp_restart()` so the browser UI shows "updating" instead of a hung connection.
 - [ ] **🔵S Battery low warning** — Surface `BATTERY_WARN_PCT` threshold in telemetry JSON and on the OLED status bar. Prevents deep-discharge damage in the field.
 - [x] **🔴S Blocking WiFi scan** — Manual refresh only via `/api/rescan`. No background task = no missed-probe reboots.
@@ -384,8 +384,8 @@ _These reduce friction for non-technical users and cut your support burden._
 _These make the browser experience richer and more debuggable._
 
 - [x] **🔵S JS error reporting** — `window.onerror` → POST `/api/jserror` so frontend bugs appear in the serial log. Currently invisible once deployed.
-- [ ] **🔵S Latency display** — Show round-trip ping time in the control UI. Helps diagnose WiFi congestion.
-- [ ] **🟢S Connection quality indicator** — WiFi signal bars + packet loss estimate in the UI header.
+- [X] **🔵S Latency display** — Show round-trip ping time in the control UI. Helps diagnose WiFi congestion.
+- [X] **🟢S Connection quality indicator** — WiFi signal bars + packet loss estimate in the UI header.
 - [ ] **🟢S Dark mode toggle** — Persist preference in `localStorage`. Match `prefers-color-scheme` on first load.
 - [x] **🔴M WebSocket control** — Joystick, keyboard, arming, telemetry push at 5 Hz.
 
@@ -409,7 +409,8 @@ _These turn the robot from a LAN toy into an internet-aware device._
 
 _These let the same firmware run on multiple boards without `#ifdef` spaghetti._
 
-- [ ] **🔵M Board abstraction layer** — GPIO pin tables per board in `components/boards/&lt;name&gt;.h`. Selected by build flag. Candidates:
+- [ ] **🔵Switch to json instead of .h files for boards HAL**
+- [X] **🔵M Board abstraction layer** — GPIO pin tables per board in `components/boards/&lt;name&gt;.h`. Selected by build flag. Candidates:
   - [Heltec WiFi LoRa 32 V3](https://heltec.org/project/wifi-lora-32-v3/) (current — ESP32-S3, SSD1306 I2C)
   - [TTGO LoRa32 V1](https://github.com/LilyGO/TTGO-LORA32) (ESP32, SSD1306 I2C, AXP192 PMIC, NEO-6M GPS)
   - [Heltec HTIT-Tracker](https://heltec.org/project/htit-tracker/) (ESP32-S3, confirm I2C pinout)
@@ -425,7 +426,7 @@ _These let the same firmware run on multiple boards without `#ifdef` spaghetti._
 
 _These make the project maintainable as it grows and help others contribute._
 
-- [ ] **🔵S Deduplicate `serve_file()`** — Extract the identical gzip-transparent file serving logic from `portal.c` and `app_server.c` into a shared helper (e.g., `vfs_mount.c` or `vfs_serve.h`). Shrinks binary and eliminates a maintenance hazard.
+- [X] **🔵S Deduplicate `serve_file()`** — Extract the identical gzip-transparent file serving logic from `portal.c` and `app_server.c` into a shared helper (utils_filesystem). Shrinks binary and eliminates a maintenance hazard.
 - [ ] **🔵M GitHub Discussions + Issue conventions** — Require Discussions for questions/setup help. Issues only for confirmed bugs. Naming: `feat:`, `fix:`, `enhance:`, `chore:`, `docs:`, `build:`.
 - [ ] **🔵M `/prerelease` bot workflow** — Comment `/prerelease` on PR → GitHub Actions builds all targets, publishes to Releases as `vX.Y.Z-prerelease-N`. Testers flash without compiling.
 - [ ] **🟢S Unit tests** — ESP-IDF [Unity framework](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/unit-tests.html). Targets: `qr_gen` boundary values, `url_decode` edge cases, NVS round-trip, `best_qr_scale` clipping.
@@ -476,3 +477,4 @@ MIT. See individual component licenses:
 - [nayuki/QR-Code-generator](https://github.com/nayuki/QR-Code-generator): MIT
 - [ESP-IDF](https://github.com/espressif/esp-idf): Apache 2.0
 - [u8g2](https://github.com/olikraus/u8g2): 2-clause BSD
+- [cJSON](https://components.espressif.com/components/espressif/cjson): cJSON
