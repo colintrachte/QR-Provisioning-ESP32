@@ -12,7 +12,7 @@
  */
 
 /* ── LittleFS ───────────────────────────────────────────────────────────── */
-
+#define FS_BASE  "/littlefs"
 /**
  * Mount the LittleFS "storage" partition at /littlefs.
  * Idempotent — safe to call from portal.c and app_server.c; only mounts once.

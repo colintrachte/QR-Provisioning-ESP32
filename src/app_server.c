@@ -26,6 +26,7 @@
 #include "utils_web.h"
 #include "utils_json.h"
 #include "config.h"
+#include "nvs_keys.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -44,8 +45,6 @@
 #include "freertos/semphr.h"
 
 static const char *TAG = "app_server";
-
-#define FS_BASE  "/littlefs"
 
 /* ── Misc API handlers ─────────────────────────────────────────────────── */
 
@@ -96,10 +95,6 @@ static esp_err_t handle_404(httpd_req_t *req)
 }
 
 /* ── Settings API ──────────────────────────────────────────────────────── */
-
-#define SETTINGS_NVS_NAMESPACE  "wifi_mgr"
-#define SETTINGS_NVS_KEY_SSID   "ssid"
-#define SETTINGS_NVS_KEY_PASS   "pass"
 
 #define MAX_SCAN_APS  20
 
@@ -266,10 +261,10 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     }
 
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    esp_err_t err = nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs);
     if (err == ESP_OK) {
-        nvs_set_str(nvs, SETTINGS_NVS_KEY_SSID, ssid);
-        nvs_set_str(nvs, SETTINGS_NVS_KEY_PASS, pass);
+        nvs_set_str(nvs, NVS_KEY_SSID, ssid);
+        nvs_set_str(nvs, NVS_KEY_PASS, pass);
         nvs_commit(nvs);
         nvs_close(nvs);
         ESP_LOGI(TAG, "Credentials updated via settings page: SSID=%s", ssid);
@@ -289,9 +284,9 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
 static esp_err_t handle_api_erase(httpd_req_t *req)
 {
     nvs_handle_t nvs;
-    if (nvs_open(SETTINGS_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-        nvs_erase_key(nvs, SETTINGS_NVS_KEY_SSID);
-        nvs_erase_key(nvs, SETTINGS_NVS_KEY_PASS);
+    if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, NVS_KEY_SSID);
+        nvs_erase_key(nvs, NVS_KEY_PASS);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
@@ -462,12 +457,9 @@ esp_err_t app_server_start(void)
     vfs_log_inventory();   /* replaces log_fs_inventory() — now in utils_filesystem */
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 20;
+    cfg.max_uri_handlers  = 36;
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
-    cfg.recv_wait_timeout = 5;
-    cfg.send_wait_timeout = 5;
-    cfg.backlog_conn      = 5;
 
     esp_err_t err = httpd_start(&s_httpd, &cfg);
     if (err != ESP_OK) {

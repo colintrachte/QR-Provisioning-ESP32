@@ -40,8 +40,6 @@
 
 static const char *TAG = "portal";
 
-#define FS_BASE  "/littlefs"
-
 /* ── Credentials ───────────────────────────────────────────────────────── */
 static char s_ssid[33] = {0};
 static char s_pass[65] = {0};
@@ -536,12 +534,9 @@ static httpd_handle_t s_httpd = NULL;
 static void start_httpd(void)
 {
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 48; /* expanded: explicit GET+HEAD per probe + wildcards */
+    cfg.max_uri_handlers  = 36;
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
-    cfg.recv_wait_timeout = 5;
-    cfg.send_wait_timeout = 5;
-    cfg.backlog_conn      = 5;
 
     if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed");
