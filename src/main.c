@@ -152,7 +152,7 @@ static void on_radio_reset(void *ctx)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Robot Firmware — Heltec WiFi LoRa 32 V3 ===");
+    ESP_LOGI(TAG, BOARD_NAME);
     ESP_LOGI(TAG, "Restart count: %d", s_restart_count);
     esp_reset_reason_t rst = esp_reset_reason();
     ESP_LOGI(TAG, "Reset reason: %d (%s)", (int)rst,
