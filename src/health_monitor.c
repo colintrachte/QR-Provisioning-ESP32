@@ -28,6 +28,7 @@
 #include "i_battery.h"
 #include "wifi_manager.h"
 #include "utils_json.h"
+#include "settings_mgr.h"
 #include "config.h"
 
 #include <stdio.h>
@@ -60,8 +61,9 @@ static void check_rssi(void)
 
     s_rssi = ap.rssi;
 
-    if (s_rssi < HEALTH_RSSI_WARN_DBM)
-        ESP_LOGW(TAG, "Weak WiFi: %d dBm (threshold %d)", s_rssi, HEALTH_RSSI_WARN_DBM);
+    int warn_dbm = settings_get()->rssi_warn_dbm;
+    if (s_rssi < warn_dbm)
+        ESP_LOGW(TAG, "Weak WiFi: %d dBm (threshold %d)", s_rssi, warn_dbm);
     else if (DEBUG_HEALTH)
         ESP_LOGD(TAG, "RSSI: %d dBm", s_rssi);
 }
@@ -134,7 +136,7 @@ void health_monitor_init(void)
 void health_monitor_tick(void)
 {
     uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (now - s_last_rssi_ms >= (uint32_t)HEALTH_SCAN_INTERVAL_MS) {
+    if (now - s_last_rssi_ms >= settings_get()->telemetry_interval_ms) {
         s_last_rssi_ms = now;
         check_rssi();
     }

@@ -7,16 +7,20 @@
  *  2.  o_led_init()            Configure LEDC on GPIO35.
  *  3.  i_battery_init()        Configure ADC1_CH0.
  *  4.  prov_ui_show_boot()     Render boot splash.
- *  5.  prov_ui_init()          Pre-generate WiFi + URL QR codes (~50 ms).
- *  6.  reprovision check       Non-blocking GPIO poll over REPROV_HOLD_MS.
- *  7.  wifi_manager_start()    Try stored credentials; fall back to portal.
- *  8.  i_sensors_init()        Re-init I2C post-WiFi; scan bus; map peripherals.
+ *  5.  nvs_flash_init()        Must precede settings_load() and wifi_manager.
+ *  6.  settings_load()         Load runtime tunables from NVS; apply defaults
+ *                              if absent. All subsequent modules read from here.
+ *  7.  prov_ui_init()          Pre-generate WiFi + URL QR codes (~50 ms).
+ *  8.  reprovision check       Non-blocking GPIO poll over REPROV_HOLD_MS.
+ *  9.  wifi_manager_start()    Try stored credentials; fall back to portal.
+ *  10. i_sensors_init()        Re-init I2C post-WiFi; scan bus; map peripherals.
  *                              Calls display_reinit_i2c() internally.
- *  9.  ctrl_drive_init()       Init motor driver hardware.
- *  10. health_monitor_init()   Cache peripheral map; baseline telemetry.
- *  11. app_server_start()      HTTP file server + WebSocket on port 80.
+ *  11. ctrl_drive_init()       Init motor driver hardware.
+ *  12. health_monitor_init()   Cache peripheral map; baseline telemetry.
+ *  13. app_server_start()      HTTP file server + WebSocket on port 80.
  *                              (Actually started by wifi_manager once STA connects)
- *  12. Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
+ *  14. udp_ctrl_start()        UDP control socket on port 4210 (post-STA).
+ *  15. Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
  *                              Spawns app_task once STA is connected.
  *
  * Boot-loop guard
@@ -30,6 +34,7 @@
  */
 
 #include "config.h"
+#include "settings_mgr.h"
 #include "display.h"
 #include "qr_gen.h"
 #include "wifi_manager.h"
@@ -40,10 +45,12 @@
 #include "ctrl_drive.h"
 #include "health_monitor.h"
 #include "app_server.h"
+#include "udp_ctrl.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
 #include "driver/gpio.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -130,9 +137,9 @@ static void app_task(void *arg)
         ctrl_drive_tick();
         i_sensors_tick();
 
-        /* Push telemetry at 5 Hz — enough for smooth UI without flooding */
+        /* Push telemetry at the configured interval (default 200 ms / 5 Hz). */
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
-        if (now_ms - last_telemetry_ms >= 200) {
+        if (now_ms - last_telemetry_ms >= settings_get()->telemetry_interval_ms) {
             last_telemetry_ms = now_ms;
             app_server_push_telemetry();
         }
@@ -176,11 +183,42 @@ void app_main(void)
     /* 3. Battery ADC: safe before WiFi; ADC1 is unaffected by radio init. */
     i_battery_init();
 
-    /* 4–5. UI: splash then QR pre-generation. */
+    /* 4. UI splash — shown immediately so the user sees activity. */
     prov_ui_show_boot();
-    prov_ui_init(AP_SSID, AP_PASSWORD);
 
-    /* 6. Re-provision check. */
+    /* 5. NVS: must be initialised before settings_load() and before
+     *    wifi_manager_start() (which also calls nvs_flash_init internally;
+     *    the second call returns ESP_ERR_INVALID_STATE which wifi_manager
+     *    already handles as a no-op). */
+    {
+        esp_err_t nvs_err = nvs_flash_init();
+        if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
+            nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_LOGW(TAG, "NVS corrupt — erasing and reinitialising");
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            nvs_err = nvs_flash_init();
+        }
+        if (nvs_err != ESP_OK)
+            ESP_LOGE(TAG, "nvs_flash_init: %s", esp_err_to_name(nvs_err));
+    }
+
+    /* 6. Settings: load runtime tunables from NVS. All modules below read
+     *    from settings_get() rather than config.h #defines for their
+     *    tuneable parameters. Falls back to compiled-in defaults on first
+     *    boot or after a factory reset — never blocks startup. */
+    {
+        esp_err_t sload = settings_load();
+        if (sload == ESP_ERR_NVS_NOT_FOUND)
+            ESP_LOGI(TAG, "No saved settings — using defaults");
+        else if (sload != ESP_OK)
+            ESP_LOGW(TAG, "settings_load: %s — defaults in use",
+                     esp_err_to_name(sload));
+    }
+
+    /* 7. QR pre-generation: uses AP creds from settings. */
+    prov_ui_init(settings_get()->ap_ssid, settings_get()->ap_password);
+
+    /* 8. Re-provision check. */
     if (reprovision_requested()) {
         wifi_manager_erase_credentials();
 
@@ -200,14 +238,17 @@ void app_main(void)
         /* Does not return. */
     }
 
-    /* 7. WiFi. */
+    /* 9. WiFi — AP credentials come from settings, not config.h #defines.
+     *    wifi_manager_start() calls nvs_flash_init() internally; it returns
+     *    ESP_ERR_INVALID_STATE on the second call which the manager treats as
+     *    a no-op, so the double-init is harmless. */
     wifi_manager_config_t cfg = WIFI_MANAGER_CONFIG_DEFAULT();
-    cfg.ap_ssid         = AP_SSID;
-    cfg.ap_password     = AP_PASSWORD;
+    cfg.ap_ssid         = settings_get()->ap_ssid;
+    cfg.ap_password     = settings_get()->ap_password;
     cfg.sta_max_retries = 3;
     cfg.on_state_change = prov_ui_on_state_change;
     cfg.on_connected    = prov_ui_on_connected;
-    cfg.on_radio_reset = on_radio_reset;
+    cfg.on_radio_reset  = on_radio_reset;
 
     o_led_blink(LED_PATTERN_FAST_BLINK);  /* "connecting" indicator */
 
@@ -229,8 +270,8 @@ void app_main(void)
 
     s_restart_count = 0;
 
-    /* 8. I2C re-init after WiFi. No delay needed — re-init is explicit.
-     *    i_sensors_init() calls display_reinit_i2c() before scanning. */
+    /* 10. I2C re-init after WiFi. No delay needed — re-init is explicit.
+     *     i_sensors_init() calls display_reinit_i2c() before scanning. */
     i_sensors_init();
     i2c_master_bus_handle_t bus = i_sensors_get_bus();
     if (bus) {
@@ -240,18 +281,18 @@ void app_main(void)
     } else {
         display_set_available(false);
     }
-    /* 9. Motor driver. */
+    /* 11. Motor driver. */
     ctrl_drive_init();
 
-    /* 10. Health monitor. */
+    /* 12. Health monitor. */
     health_monitor_init();
 
-    /* 11. App server is started by wifi_manager once STA connects;
+    /* 13. App server is started by wifi_manager once STA connects;
      *     see mgr_task in wifi_manager.c. */
 
     o_led_blink(LED_PATTERN_HEARTBEAT);  /* "running" indicator */
 
-    /* 12. Main loop — 10 Hz UI tick + health checks. */
+    /* 14. Main loop — 10 Hz UI tick + health checks. */
     ESP_LOGI(TAG, "Entering main loop");
     bool app_task_spawned = false;
 
@@ -266,6 +307,11 @@ void app_main(void)
              * never preempted by telemetry or sensor work. */
             xTaskCreatePinnedToCore(app_task, "app_task", 4096,
                                     NULL, 5, NULL, 1);
+            /* UDP control socket also runs on Core 1. udp_ctrl_start()
+             * is safe to call after STA is up — it binds INADDR_ANY so
+             * it works on any interface. app_server_start() is called by
+             * wifi_manager's mgr_task just before this branch is reached. */
+            udp_ctrl_start();
             app_task_spawned = true;
         }
 

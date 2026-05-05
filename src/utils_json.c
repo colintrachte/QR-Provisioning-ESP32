@@ -5,8 +5,7 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 
-
-static const char *TAG = "utils_json";
+//static const char *TAG = "utils_json";
 /* ── WiFi scan helpers ──────────────────────────────────────────────────── */
 
 int vfs_rssi_to_quality(int rssi)

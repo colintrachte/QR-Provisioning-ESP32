@@ -6,19 +6,20 @@
  *   right = y - x
  * Both outputs clamped to [-1, +1] after mixing.
  *
- * Ramp limiting (DRIVE_MAX_DELTA_PER_TICK)
- * ─────────────────────────────────────────
+ * Ramp limiting (drive_ramp_rate)
+ * ────────────────────────────────
  * Prevents instantaneous jumps in motor current when a joystick snaps to
  * full deflection or zero. On brushed DC motors with no current limiting,
  * large sudden current spikes can trigger the driver IC's protection and
- * cause a brief stall.
+ * cause a brief stall. Rate is read from settings_get()->drive_ramp_rate
+ * on every tick so changes take effect immediately without a reboot.
  *
  * Command watchdog
  * ────────────────
  * ctrl_drive_feed_watchdog() must be called each time a valid command is
  * received from the WebSocket handler. ctrl_drive_tick() checks elapsed
- * time; if no command arrives within DRIVE_WATCHDOG_MS the controller
- * disarms itself and calls ctrl_drive_emergency_stop().
+ * time; if no command arrives within settings_get()->drive_watchdog_ms the
+ * controller disarms itself and calls ctrl_drive_emergency_stop().
  *
  * This catches: browser crash, WiFi drop, tab navigation, and any other
  * path where the TCP close frame is delayed or never sent.
@@ -38,10 +39,19 @@
  * All other shared scalars (uint32_t, bool) are volatile; 32/8-bit aligned
  * writes on Xtensa LX7 are single-instruction atomic.
  * ctrl_drive_tick() runs from one task only.
+ *
+ * Settings read points
+ * ────────────────────
+ * drive_deadband    — read in ctrl_drive_set_axes() on every WS frame.
+ * drive_ramp_rate   — read in ramp() on every ctrl_drive_tick() call.
+ * drive_watchdog_ms — read in ctrl_drive_tick() watchdog check.
+ * All three are const* reads with no locking needed (settings_get() is
+ * safe for concurrent readers; saves are mutex-protected inside settings_mgr).
  */
 
 #include "ctrl_drive.h"
 #include "o_motors.h"
+#include "settings_mgr.h"
 #include "config.h"
 
 #include <math.h>
@@ -54,7 +64,7 @@ static const char *TAG = "ctrl_drive";
 /* ── Watchdog ───────────────────────────────────────────────────────────────
  * s_last_cmd_ms is written by the WS task, read by app_task.
  * uint32_t write on ESP32-S3 is atomic; volatile prevents register caching.
- * DRIVE_WATCHDOG_MS must be defined in config.h — no fallback here. */
+ * Timeout threshold is read from settings_get()->drive_watchdog_ms each tick. */
 static volatile uint32_t s_last_cmd_ms  = 0;
 static volatile bool     s_watchdog_ok  = false;  /* false until first feed */
 
@@ -82,7 +92,9 @@ static float clampf(float v, float lo, float hi)
 static float ramp(float current, float target)
 {
     float delta = target - current;
-    float max   = DRIVE_MAX_DELTA_PER_TICK;
+    /* Read ramp rate from settings on every call — takes effect immediately
+     * when the user changes it via /api/settings without requiring a reboot. */
+    float max = settings_get()->drive_ramp_rate;
     if (delta >  max) delta =  max;
     if (delta < -max) delta = -max;
     return current + delta;
@@ -99,7 +111,10 @@ void ctrl_drive_init(void)
 {
     o_motors_init();
     s_last_cmd_ms = now_ms();
-    ESP_LOGI(TAG, "ctrl_drive_init OK (watchdog=%d ms)", DRIVE_WATCHDOG_MS);
+    ESP_LOGI(TAG, "ctrl_drive_init OK (watchdog=%lu ms, deadband=%.3f, ramp=%.3f)",
+             (unsigned long)settings_get()->drive_watchdog_ms,
+             settings_get()->drive_deadband,
+             settings_get()->drive_ramp_rate);
 }
 
 /**
@@ -118,11 +133,13 @@ void ctrl_drive_set_axes(float x, float y)
     x = clampf(x, -1.0f, 1.0f);
     y = clampf(y, -1.0f, 1.0f);
 
-    /* Deadband: zero out, do NOT rescale here — rescaling is done client-side
-     * so the firmware sees a fully-processed value. If rescaling were done
-     * both places the curve would be applied twice. */
-    float fx = (fabsf(x) < DRIVE_DEADBAND) ? 0.0f : x;
-    float fy = (fabsf(y) < DRIVE_DEADBAND) ? 0.0f : y;
+    /* Deadband: read from settings so it can be tuned at runtime without
+     * reflashing. Do NOT rescale here — rescaling is done client-side so the
+     * firmware sees a fully-processed value. If rescaling were done both
+     * places the curve would be applied twice. */
+    float deadband = settings_get()->drive_deadband;
+    float fx = (fabsf(x) < deadband) ? 0.0f : x;
+    float fy = (fabsf(y) < deadband) ? 0.0f : y;
 
     /* Convert to fixed-point for atomic storage. int16_t write is a single
      * instruction on Xtensa LX7, avoiding the torn-read race that exists with
@@ -150,10 +167,11 @@ void ctrl_drive_tick(void)
 {
     /* ── Watchdog check ──────────────────────────────────────────────────── */
     if (s_armed && s_watchdog_ok) {
-        uint32_t elapsed = now_ms() - s_last_cmd_ms;
-        if (elapsed > DRIVE_WATCHDOG_MS) {
-            ESP_LOGW(TAG, "Command watchdog expired (%lu ms) — disarming",
-                     (unsigned long)elapsed);
+        uint32_t elapsed    = now_ms() - s_last_cmd_ms;
+        uint32_t watchdog_ms = settings_get()->drive_watchdog_ms;
+        if (elapsed > watchdog_ms) {
+            ESP_LOGW(TAG, "Command watchdog expired (%lu ms > %lu ms) — disarming",
+                     (unsigned long)elapsed, (unsigned long)watchdog_ms);
             s_armed       = false;
             s_watchdog_ok = false;
             ctrl_drive_emergency_stop();

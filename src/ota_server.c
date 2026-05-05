@@ -9,9 +9,10 @@
  *
  * Auth
  * ────
- * If OTA_AUTH_TOKEN is non-empty the handler checks the X-OTA-Token request
- * header before touching flash. A missing or wrong token returns 401 and
- * aborts immediately. This is not cryptographic security — it is a simple
+ * The OTA token is read from settings_get()->ota_token at request time, so
+ * it can be changed via POST /api/settings without reflashing. An empty token
+ * string means open access. Comparison is constant-time (XOR accumulator) to
+ * prevent timing oracle attacks. This is not cryptographic security — it is a
  * guard against accidental or opportunistic flashing on a LAN.
  *
  * Filesystem update
@@ -24,6 +25,7 @@
  */
 
 #include "ota_server.h"
+#include "settings_mgr.h"
 #include "config.h"
 
 #include <string.h>
@@ -38,25 +40,42 @@ static const char *TAG = "ota_server";
 
 /* ── Auth check ─────────────────────────────────────────────────────────────
  * Returns true if auth passes (token matches or no token configured).
- * Sends 401 and returns false on failure. */
+ * Sends 401 and returns false on failure.
+ *
+ * Token is read from settings_get()->ota_token at request time so it can
+ * be changed via /api/settings without reflashing.
+ *
+ * Comparison is constant-time (byte-by-byte XOR accumulator) to prevent
+ * timing oracle attacks — strcmp() short-circuits on the first mismatch. */
 static bool auth_ok(httpd_req_t *req)
 {
-#ifndef OTA_AUTH_TOKEN
-    return true;
-#else
-    if (sizeof(OTA_AUTH_TOKEN) <= 1) return true;   /* empty string → open */
+    const char *token_cfg = settings_get()->ota_token;
+    if (token_cfg[0] == '\0') return true;   /* no token configured → open */
 
     char token[128] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-OTA-Token",
-                                    token, sizeof(token)) != ESP_OK ||
-        strcmp(token, OTA_AUTH_TOKEN) != 0) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_sendstr(req, "Bad or missing X-OTA-Token");
-        ESP_LOGW(TAG, "OTA request rejected — bad token");
-        return false;
+                                    token, sizeof(token)) != ESP_OK) {
+        goto reject;
     }
+
+    /* Constant-time comparison: lengths must match first (avoids padding
+     * the shorter string, which would itself be a timing side-channel). */
+    size_t cfg_len = strlen(token_cfg);
+    size_t tok_len = strlen(token);
+    if (cfg_len != tok_len) goto reject;
+
+    uint8_t diff = 0;
+    for (size_t i = 0; i < cfg_len; i++)
+        diff |= (uint8_t)token_cfg[i] ^ (uint8_t)token[i];
+    if (diff != 0) goto reject;
+
     return true;
-#endif
+
+reject:
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_sendstr(req, "Bad or missing X-OTA-Token");
+    ESP_LOGW(TAG, "OTA request rejected — bad token");
+    return false;
 }
 
 /* ── Firmware OTA handler ────────────────────────────────────────────────────

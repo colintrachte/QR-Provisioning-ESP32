@@ -1,1 +1,171 @@
+/**
+ * settings_mgr.h — Runtime configuration store.
+ *
+ * Single source of truth for all tunables that do not require a firmware
+ * reflash. Hardware-locked constants (GPIO numbers, ADC channels, LEDC
+ * timer/channel assignments) stay in config.h; everything the user might
+ * want to change at runtime lives here.
+ *
+ * Storage model
+ * ─────────────
+ * All settings are serialised as a single cJSON blob and stored under one
+ * NVS key ("cfg") in the "settings" namespace. An atomic write (serialize →
+ * nvs_set_str → nvs_commit) prevents partial-update corruption.
+ *
+ * Schema version
+ * ─────────────
+ * s_settings.schema_version is written on every save. On load, if the stored
+ * version < SETTINGS_SCHEMA_VERSION, settings_load() runs migrate() to fill
+ * in any new keys with their defaults before returning. This lets firmware
+ * upgrades add new tunables without wiping existing user config.
+ *
+ * Thread safety
+ * ─────────────
+ * settings_get() returns a const pointer to the singleton struct. Reads are
+ * safe from any task — the struct is updated only inside settings_load() (boot,
+ * single task) and settings_save() (protected by an internal mutex).
+ * Consumers that want to react to changes should register via
+ * settings_register_change_cb().
+ *
+ * Usage
+ * ─────
+ * 1. Call settings_load() once, right after nvs_flash_init() in app_main().
+ * 2. Read tunables via settings_get()->field.
+ * 3. Modify via settings_update() + settings_save() from the HTTP handler.
+ */
+
 #pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include "esp_err.h"
+
+/* ── Schema version ─────────────────────────────────────────────────────────
+ * Bump this integer whenever new fields are added to robot_settings_t.
+ * The migration path in settings_mgr.c will apply defaults for any new key. */
+#define SETTINGS_SCHEMA_VERSION  1
+
+/* ── NVS location ───────────────────────────────────────────────────────────*/
+#define SETTINGS_NVS_NS   "settings"
+#define SETTINGS_NVS_KEY  "cfg"
+
+/* ── Limits ─────────────────────────────────────────────────────────────────*/
+#define SETTINGS_DEVICE_NAME_MAX   32
+#define SETTINGS_AP_SSID_MAX       32
+#define SETTINGS_AP_PASS_MAX       64
+#define SETTINGS_MDNS_HOST_MAX     32
+#define SETTINGS_OTA_TOKEN_MAX     64
+
+/* ── Settings struct ────────────────────────────────────────────────────────
+ *
+ * All fields must be trivially copyable (no pointers). String fields are
+ * fixed-size char arrays so the struct can be stack-copied safely.
+ *
+ * Field naming convention: snake_case, units appended (_ms, _dbm, _pct).
+ */
+typedef struct {
+    /* Meta */
+    int     schema_version;
+
+    /* Identity */
+    char    device_name[SETTINGS_DEVICE_NAME_MAX];   /* "Robot" */
+
+    /* Network — AP mode */
+    char    ap_ssid    [SETTINGS_AP_SSID_MAX];        /* SoftAP SSID          */
+    char    ap_password[SETTINGS_AP_PASS_MAX];        /* "" = open network    */
+    uint8_t ap_channel;                               /* 1–13, 0 = auto       */
+
+    /* Network — mDNS */
+    bool    mdns_enable;
+    char    mdns_hostname[SETTINGS_MDNS_HOST_MAX];   /* "robot" → robot.local */
+
+    /* Drive control */
+    float   drive_deadband;           /* 0.0–0.5, default 0.05               */
+    float   drive_ramp_rate;          /* max Δ per 10 ms tick, default 0.05  */
+    uint32_t drive_watchdog_ms;       /* command timeout, default 500        */
+
+    /* Telemetry / health */
+    uint32_t telemetry_interval_ms;  /* push period, default 200 (5 Hz)     */
+    int      rssi_warn_dbm;          /* log warning below this, default -75  */
+
+    /* OTA security */
+    char    ota_token[SETTINGS_OTA_TOKEN_MAX];       /* "" = no auth         */
+
+    /* Display */
+    uint32_t display_sleep_timeout_s; /* 0 = never sleep, default 0         */
+
+} robot_settings_t;
+
+/* ── Change callback ────────────────────────────────────────────────────────
+ * Called on the task that invoked settings_save(). Keep it short; do not
+ * call settings_save() recursively from inside the callback. */
+typedef void (*settings_change_cb_t)(const robot_settings_t *new_settings,
+                                     void *ctx);
+
+/* ── Public API ─────────────────────────────────────────────────────────────*/
+
+/**
+ * Load settings from NVS into the singleton.
+ *
+ * Must be called once from app_main() after nvs_flash_init() and before
+ * any other module that reads settings_get().
+ *
+ * If the NVS key is absent or corrupt the singleton is populated with
+ * compile-time defaults (defined in settings_mgr.c) and ESP_ERR_NVS_NOT_FOUND
+ * is returned — the caller should treat this as non-fatal.
+ *
+ * If the stored schema_version < SETTINGS_SCHEMA_VERSION the migrated struct
+ * is saved back immediately so subsequent boots are clean.
+ *
+ * @return ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if defaults were used,
+ *         or another esp_err_t on NVS/JSON failure.
+ */
+esp_err_t settings_load(void);
+
+/**
+ * Write the current singleton to NVS (serialize → nvs_set_str → nvs_commit).
+ * Fires registered change callbacks after a successful save.
+ *
+ * Thread-safe: serialisation is mutex-protected.
+ *
+ * @return ESP_OK on success, or an NVS/cJSON error code.
+ */
+esp_err_t settings_save(void);
+
+/**
+ * Overwrite the singleton with src, then call settings_save().
+ * Use from HTTP handlers: copy the validated new struct in, then save.
+ *
+ * @param src   Pointer to the new settings; must not be NULL.
+ * @return      Result of settings_save().
+ */
+esp_err_t settings_update(const robot_settings_t *src);
+
+/**
+ * Reset the singleton to compile-time defaults and save to NVS.
+ * Does NOT restart the device — callers may choose to reboot afterward.
+ */
+esp_err_t settings_reset_to_defaults(void);
+
+/**
+ * Read-only accessor. Returns a stable pointer valid for the lifetime of
+ * the firmware run. Do not cache the returned struct by value if you need
+ * to observe future changes; instead re-call settings_get() or use a
+ * change callback.
+ */
+const robot_settings_t *settings_get(void);
+
+/**
+ * Register a callback invoked after every successful settings_save().
+ * Only one callback slot is provided per call — call again to replace.
+ * Pass NULL to clear.
+ */
+void settings_register_change_cb(settings_change_cb_t cb, void *ctx);
+
+/**
+ * Validate a candidate settings struct.
+ * Returns ESP_OK if all fields are within acceptable ranges/lengths.
+ * On failure, err_buf (if non-NULL) is filled with a human-readable reason.
+ */
+esp_err_t settings_validate(const robot_settings_t *s,
+                             char *err_buf, size_t err_buf_len);

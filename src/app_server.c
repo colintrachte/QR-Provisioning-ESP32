@@ -22,6 +22,7 @@
 #include "health_monitor.h"
 #include "prov_ui.h"
 #include "ota_server.h"
+#include "settings_server.h"
 #include "utils_filesystem.h"
 #include "utils_web.h"
 #include "utils_json.h"
@@ -457,7 +458,7 @@ esp_err_t app_server_start(void)
     vfs_log_inventory();   /* replaces log_fs_inventory() — now in utils_filesystem */
 
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers  = 36;
+    cfg.max_uri_handlers  = 40;   /* 16 app routes + 2 OTA + 3 settings + headroom */
     cfg.lru_purge_enable  = true;
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
 
@@ -491,6 +492,7 @@ esp_err_t app_server_start(void)
 
     ota_server_register(s_httpd);
     ota_server_mark_valid();
+    settings_server_register(s_httpd);
 
     ESP_LOGI(TAG, "App server started (port 80)");
     return ESP_OK;

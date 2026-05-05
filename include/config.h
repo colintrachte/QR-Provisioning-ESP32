@@ -113,3 +113,4 @@
 #define DEBUG_MAIN    1
 #define DEBUG_MOTORS  1
 #define DEBUG_SENSORS 1
+#define DEBUG_UDP_CTRL 1
