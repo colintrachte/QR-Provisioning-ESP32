@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f1117">
+    <title>Robot Login</title>
+    <link rel="preload" href="/base.css" as="style">
+    <link rel="preload" href="/login.css" as="style">
+    <link rel="stylesheet" href="/base.css">
+    <link rel="stylesheet" href="/login.css">
+</head>
+
+<body>
+    <div class="card login-card">
+        <div class="login-header">
+            <div class="login-logo">&#129302;</div>
+            <h1>Robot Access</h1>
+            <p class="login-sub">Authentication required</p>
+        </div>
+
+        <form id="login-form" class="login-form" autocomplete="off">
+            <div class="field-group">
+                <label class="field-label" for="username">Username</label>
+                <input class="field-input" id="username" type="text" placeholder="admin" autocomplete="off"
+                    spellcheck="false" autofocus>
+            </div>
+
+            <div class="field-group">
+                <label class="field-label" for="password">Password</label>
+                <div class="input-row">
+                    <input class="field-input" id="password" type="password" placeholder="••••••••"
+                        autocomplete="current-password">
+                    <button type="button" class="btn-icon" id="togglePw" title="Show/hide"
+                        aria-label="Toggle password visibility">&#128065;</button>
+                </div>
+            </div>
+
+            <div class="login-options">
+                <label class="toggle">
+                    <input type="checkbox" id="remember">
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span class="toggle-label-text">Remember me</span>
+                </label>
+                <a href="/setup" class="login-link">Setup WiFi</a>
+            </div>
+
+            <button type="submit" class="btn btn-primary login-btn">Sign In</button>
+            <p class="login-status" id="login-status"></p>
+        </form>
+
+        <div class="login-hint">
+            <span class="notice-icon">&#8505;</span>
+            <span>Default credentials are configured in firmware. Change them after first login.</span>
+        </div>
+    </div>
+    <script src="/login.js" defer></script>
+</body>
+
+</html>

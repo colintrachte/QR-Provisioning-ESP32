@@ -110,7 +110,6 @@ async function fetchSettings() {
     showToast('Failed to load settings — ' + e.message, 'err', 4000);
   }
 }
-
 async function saveFields(fields) {
   const payload = {};
   let willReboot = false;
@@ -120,24 +119,40 @@ async function saveFields(fields) {
     if (REBOOT_FIELDS.has(key)) willReboot = true;
   }
 
-  const btn = document.querySelector(`[data-save]`);  // active save btn
+  const btn = document.querySelector(`[data-save]`);
   if (btn) btn.classList.add('saving');
 
   try {
+    console.log('Sending POST /api/settings:', JSON.stringify(payload));
+
     const r = await fetch(API, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(payload),
     });
-    const data = await r.json();
+
+    console.log('Response status:', r.status, r.statusText);
+    console.log('Response headers:', [...r.headers.entries()]);
+
+    const text = await r.text();
+    console.log('Response body:', text);
+
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = { error: text.substring(0, 200).replace(/\s+/g, ' ') };
+    }
 
     if (!r.ok) {
-      showToast('Error: ' + (data.error || r.statusText), 'err', 5000);
+      showToast(`Server error ${r.status}: ` + (data.error || 'Unknown'), 'err', 6000);
       return;
     }
 
-    // Merge saved values back into CFG
     Object.assign(CFG, payload);
+    if ('ota_token' in payload) {
+      CFG.ota_token_set = payload.ota_token !== '';
+    }
 
     if (data.reboot_required || willReboot) {
       pendingReboot = true;
@@ -146,7 +161,8 @@ async function saveFields(fields) {
 
     showToast('Saved.', 'ok');
   } catch (e) {
-    showToast('Save failed: ' + e.message, 'err', 5000);
+    showToast('Network error: ' + e.message, 'err', 5000);
+    console.error('Fetch failed:', e);
   } finally {
     if (btn) btn.classList.remove('saving');
   }

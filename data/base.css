@@ -298,3 +298,13 @@ h1
 .mt-3 { margin-top: var(--space-3); }
 .mt-4 { margin-top: var(--space-4); }
 .mt-5 { margin-top: var(--space-5); }
+
+/* ── Card sizing variants ───────────────────────────────────────────────────*/
+.card--lg {
+    max-width: 520px;
+}
+
+.card--auth {
+    max-width: 380px;
+    padding: 32px 28px;
+}
