@@ -241,7 +241,9 @@ static void on_sta_connected(void)
     fire_connected();
 
     app_server_start();
-
+    // Kill the AP — no longer needed once STA is up
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    ESP_LOGI(TAG, "AP stopped — STA-only mode");
 #if MDNS_ENABLE
     if (mdns_init() == ESP_OK) {
         mdns_hostname_set(MDNS_HOSTNAME);

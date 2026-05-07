@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "device_name": "Robot",
+  "ap_ssid": "RobotSetup",
+  "ap_password": "",
+  "ap_channel": 1,
+  "mdns_enable": false,
+  "mdns_hostname": "robot",
+  "drive_deadband": 0.05,
+  "drive_ramp_rate": 0.05,
+  "drive_watchdog_ms": 500,
+  "telemetry_interval_ms": 200,
+  "rssi_warn_dbm": -75,
+  "ota_token_set": false,
+  "display_sleep_timeout_s": 0
+}

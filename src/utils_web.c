@@ -84,7 +84,7 @@ esp_err_t web_serve_file(httpd_req_t *req, const char *path,
         f = fopen(gz_path, "rb");
         if (f) use_gz = true;
     }
-
+    ESP_LOGI(TAG, "Serving %s (%s)", path, use_gz ? "gz" : "plain")
     if (!f) {
         f = fopen(path, "rb");
     }
