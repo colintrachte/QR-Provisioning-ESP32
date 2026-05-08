@@ -5,178 +5,360 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f1117">
-    <title>Robot Settings</title>
-    <link rel="preload" href="/base.css" as="style">
-    <link rel="preload" href="/settings.css" as="style">
-    <link rel="stylesheet" href="/base.css">
+    <title>Settings</title>
+    <!-- (#11) base.css NOT loaded — settings.css is self-contained -->
     <link rel="stylesheet" href="/settings.css">
 </head>
 
 <body>
 
-    <div class="card settings-card">
+    <div class="settings-shell">
 
-        <header class="site-header">
-            <a href="/" class="back-link">&#8592; CONTROL</a>
-            <div class="site-title">
-                <span class="title-label">SYS</span>
-                <span class="title-name" id="deviceName">ROBOT</span>
+        <!-- ── Sidebar nav ──────────────────────────────────────────────── -->
+        <nav class="settings-nav" id="settingsNav" aria-label="Settings sections">
+            <div class="nav-header">
+                <a href="/" class="back-link" title="Back to control">&#8592;</a>
+                <div class="nav-title">
+                    <span class="nav-title-sub">SYS</span>
+                    <span class="nav-title-name" id="deviceName">ROBOT</span>
+                </div>
+                <div class="conn-indicator" id="connIndicator">
+                    <span class="conn-dot"></span>
+                    <span class="conn-label">OFFLINE</span>
+                </div>
             </div>
-            <div class="conn-indicator" id="connIndicator">
-                <span class="conn-dot"></span>
-                <span class="conn-label">OFFLINE</span>
-            </div>
-        </header>
 
-        <main class="settings-main">
+            <ul class="nav-list" role="list">
+                <li><button class="nav-item active" data-section="system">
+                        <span class="nav-icon">&#9881;</span><span>System</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="network">
+                        <span class="nav-icon">&#128246;</span><span>Network</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="drive">
+                        <span class="nav-icon">&#127945;</span><span>Drive</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="telemetry">
+                        <span class="nav-icon">&#128200;</span><span>Telemetry</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="peripherals">
+                        <span class="nav-icon">&#128268;</span><span>Peripherals</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="appearance">
+                        <span class="nav-icon">&#127912;</span><span>Appearance</span>
+                    </button></li>
+                <li><button class="nav-item" data-section="security">
+                        <span class="nav-icon">&#128274;</span><span>Security</span>
+                    </button></li>
+            </ul>
+        </nav>
 
-            <!-- Tab bar -->
-            <nav class="tab-bar" role="tablist">
-                <button class="tab active" data-tab="identity" role="tab">IDENTITY</button>
-                <button class="tab" data-tab="network" role="tab">NETWORK</button>
-                <button class="tab" data-tab="drive" role="tab">DRIVE</button>
-                <button class="tab" data-tab="telemetry" role="tab">TELEMETRY</button>
-                <button class="tab" data-tab="security" role="tab">SECURITY</button>
-                <button class="tab" data-tab="system" role="tab">SYSTEM</button>
-            </nav>
+        <!-- ── Main content ─────────────────────────────────────────────── -->
+        <main class="settings-main" id="settingsMain">
 
-            <!-- Toast notification -->
             <div class="toast" id="toast" aria-live="polite"></div>
 
-            <!-- Reboot banner -->
             <div class="reboot-banner hidden" id="rebootBanner">
-                <span>&#9889; Some changes require a reboot to take effect.</span>
+                <span>&#9889; Changes require a reboot.</span>
                 <button class="btn btn-warn" id="rebootBtn">REBOOT NOW</button>
                 <button class="btn btn-ghost" id="rebootDismiss">LATER</button>
             </div>
 
-            <!-- ── IDENTITY ─────────────────────────────────────────── -->
-            <section class="tab-panel active" id="tab-identity">
-                <div class="panel-grid">
+            <!-- ════════════════════════════════════════════════════════════
+         SYSTEM — Identity · Firmware OTA · Filesystem OTA · Danger
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section active" id="section-system">
 
-                    <div class="field-group">
-                        <label class="field-label" for="deviceName_input">DEVICE NAME</label>
-                        <div class="field-hint">Displayed in header and OLED status screen.</div>
-                        <input class="field-input" id="deviceName_input" type="text" maxlength="31" placeholder="Robot"
-                            autocomplete="off" spellcheck="false">
+                <div class="accordion open" id="acc-identity">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-identity-body">
+                        <span class="acc-title">Identity</span>
+                        <span class="acc-hint">Device name</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-identity-body">
+                        <div class="field-group">
+                            <label class="field-label" for="deviceName_input">DEVICE NAME</label>
+                            <div class="field-hint">Shown in the sidebar header and on the OLED status screen.</div>
+                            <input class="field-input" id="deviceName_input" type="text" maxlength="31"
+                                placeholder="Robot" autocomplete="off" spellcheck="false">
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="identity">SAVE IDENTITY</button>
+                        </div>
                     </div>
+                </div>
 
-                    <div class="field-group">
-                        <label class="field-label" for="mdns_hostname">mDNS HOSTNAME</label>
-                        <div class="field-hint">Reachable at <span class="mono" id="mdnsPreview">robot.local</span>
-                            &mdash;
-                            requires reboot.</div>
-                        <div class="input-row">
-                            <input class="field-input" id="mdns_hostname" type="text" maxlength="31" placeholder="robot"
+                <div class="accordion" id="acc-ota-fw">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-ota-fw-body">
+                        <span class="acc-title">Firmware Update</span>
+                        <span class="acc-hint">OTA flash via browser</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-ota-fw-body" hidden>
+                        <div class="field-hint">
+                            Upload a <span class="mono">.bin</span> built with
+                            <code>pio run -e robot_esp32</code>. Device reboots after flashing.
+                        </div>
+                        <div class="ota-zone" id="otaFwZone" role="button" tabindex="0"
+                            aria-label="Drop firmware binary or click to browse">
+                            <input type="file" id="otaFwFile" accept=".bin" hidden>
+                            <div class="ota-icon">&#128190;</div>
+                            <div class="ota-label">Drop <span class="mono">firmware.bin</span> or
+                                <button class="btn-link" id="otaFwPick">browse</button>
+                            </div>
+                            <div class="ota-filename" id="otaFwName"></div>
+                            <div class="ota-progress hidden" id="otaFwProgress">
+                                <div class="progress-track">
+                                    <div class="progress-fill" id="otaFwFill"></div>
+                                </div>
+                                <div class="progress-pct" id="otaFwLabel">0%</div>
+                            </div>
+                            <button class="btn btn-warn hidden" id="otaFwBtn">FLASH FIRMWARE</button>
+                        </div>
+                        <div class="build-hint">
+                            <strong>Build path:</strong>
+                            <code>.pio/build/&lt;env&gt;/firmware.bin</code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion" id="acc-ota-fs">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-ota-fs-body">
+                        <span class="acc-title">Filesystem Update</span>
+                        <span class="acc-hint">LittleFS image · no reboot</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-ota-fs-body" hidden>
+                        <div class="field-hint">
+                            Upload a LittleFS <span class="mono">.bin</span> image.
+                            Filesystem remounts immediately — no reboot required.
+                        </div>
+                        <div class="ota-zone" id="otaFsZone" role="button" tabindex="0"
+                            aria-label="Drop filesystem image or click to browse">
+                            <input type="file" id="otaFsFile" accept=".bin" hidden>
+                            <div class="ota-icon">&#127760;</div>
+                            <div class="ota-label">Drop <span class="mono">littlefs.bin</span> or
+                                <button class="btn-link" id="otaFsPick">browse</button>
+                            </div>
+                            <div class="ota-filename" id="otaFsName"></div>
+                            <div class="ota-progress hidden" id="otaFsProgress">
+                                <div class="progress-track">
+                                    <div class="progress-fill" id="otaFsFill"></div>
+                                </div>
+                                <div class="progress-pct" id="otaFsLabel">0%</div>
+                            </div>
+                            <button class="btn btn-warn hidden" id="otaFsBtn">FLASH FILESYSTEM</button>
+                        </div>
+                        <div class="build-hint">
+                            <strong>Build path:</strong>
+                            <code>.pio/build/&lt;env&gt;/littlefs.bin</code><br>
+                            Run <code>pio run -e robot_esp32 -t buildfs</code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion" id="acc-danger">
+                    <button class="accordion-hdr danger-hdr" aria-expanded="false" aria-controls="acc-danger-body">
+                        <span class="acc-title">Danger Zone</span>
+                        <span class="acc-hint">Reboot · reset settings · erase WiFi</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-danger-body" hidden>
+                        <div class="danger-zone">
+                            <div class="danger-row">
+                                <div>
+                                    <div class="danger-title">REBOOT DEVICE</div>
+                                    <div class="field-hint">Graceful restart. Saved settings take effect.</div>
+                                </div>
+                                <button class="btn btn-warn" id="btnReboot">REBOOT</button>
+                            </div>
+                            <div class="danger-row">
+                                <div>
+                                    <div class="danger-title">FACTORY RESET SETTINGS</div>
+                                    <div class="field-hint">Reset all tunables to firmware defaults. WiFi credentials
+                                        untouched.</div>
+                                </div>
+                                <button class="btn btn-danger" id="btnFactoryReset">RESET</button>
+                            </div>
+                            <div class="danger-row">
+                                <div>
+                                    <div class="danger-title">ERASE WIFI CREDENTIALS</div>
+                                    <div class="field-hint">Forces provisioning mode on next boot.</div>
+                                </div>
+                                <button class="btn btn-danger" id="btnEraseWifi">ERASE + REBOOT</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- ════════════════════════════════════════════════════════════
+         NETWORK — Access Point · mDNS / Discovery · Signal Quality
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-network">
+
+                <div class="accordion open" id="acc-wifi-ap">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-wifi-ap-body">
+                        <span class="acc-title">Access Point</span>
+                        <span class="acc-hint">Provisioning AP config</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-wifi-ap-body">
+                        <div class="field-group">
+                            <label class="field-label" for="ap_ssid">AP SSID</label>
+                            <div class="field-hint">SSID broadcast in provisioning mode — requires reboot.</div>
+                            <input class="field-input" id="ap_ssid" type="text" maxlength="31" placeholder="RobotAP"
                                 autocomplete="off" spellcheck="false">
-                            <span class="input-suffix">.local</span>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label" for="ap_password">AP PASSWORD</label>
+                            <div class="field-hint">Min 8 chars or blank for open — requires reboot.</div>
+                            <div class="input-row">
+                                <input class="field-input" id="ap_password" type="password" maxlength="63"
+                                    placeholder="(unchanged)" autocomplete="new-password">
+                                <button class="btn-icon" id="toggleApPw"
+                                    aria-label="Toggle password visibility">&#128065;</button>
+                            </div>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label" for="ap_channel">AP CHANNEL
+                                <span class="unit">0 = auto</span></label>
+                            <div class="field-hint">0 = auto-select. Fixed channel reduces scan time.</div>
+                            <div class="slider-row">
+                                <input type="range" id="ap_channel" min="0" max="13" step="1" value="1">
+                                <span class="slider-value" id="ap_channel_val">1</span>
+                            </div>
+                            <div class="slider-ticks">
+                                <span>AUTO</span><span>1</span><span>6</span><span>11</span><span>13</span></div>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="network">SAVE NETWORK</button>
                         </div>
                     </div>
+                </div>
 
-                    <div class="field-group toggle-group">
-                        <label class="field-label" for="mdns_enable">mDNS DISCOVERY</label>
-                        <div class="field-hint">Advertise device on local network &mdash; requires reboot.</div>
-                        <label class="toggle">
-                            <input type="checkbox" id="mdns_enable">
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                            <span class="toggle-label-text"></span>
-                        </label>
+                <div class="accordion" id="acc-mdns">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-mdns-body">
+                        <span class="acc-title">mDNS / Discovery</span>
+                        <span class="acc-hint">Local hostname advertisement</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-mdns-body" hidden>
+                        <div class="field-group">
+                            <label class="field-label" for="mdns_hostname">HOSTNAME</label>
+                            <div class="field-hint">Reachable at <span class="mono" id="mdnsPreview">robot.local</span>
+                                after reboot.</div>
+                            <div class="input-row">
+                                <input class="field-input" id="mdns_hostname" type="text" maxlength="31"
+                                    placeholder="robot" autocomplete="off" spellcheck="false">
+                                <span class="input-suffix">.local</span>
+                            </div>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label" for="mdns_enable">mDNS DISCOVERY</label>
+                            <div class="field-hint">Advertise device on the LAN — requires reboot.</div>
+                            <label class="toggle">
+                                <input type="checkbox" id="mdns_enable">
+                                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            </label>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="mdns">SAVE mDNS</button>
+                        </div>
                     </div>
+                </div>
 
+                <div class="accordion" id="acc-rssi">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-rssi-body">
+                        <span class="acc-title">Signal Quality</span>
+                        <span class="acc-hint">RSSI warning threshold</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-rssi-body" hidden>
+                        <div class="field-group">
+                            <label class="field-label" for="rssi_warn_dbm">RSSI WARN THRESHOLD
+                                <span class="unit">dBm</span></label>
+                            <div class="field-hint">Log a warning when signal drops below this level.</div>
+                            <div class="slider-row">
+                                <input type="range" id="rssi_warn_dbm" min="-120" max="-30" step="1" value="-75">
+                                <span class="slider-value" id="rssi_warn_dbm_val">&minus;75 dBm</span>
+                            </div>
+                            <div class="slider-ticks">
+                                <span>&minus;120 weak</span><span>&minus;75</span><span>&minus;50</span><span>&minus;30
+                                    strong</span>
+                            </div>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="signal">SAVE SIGNAL</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="panel-actions">
-                    <button class="btn btn-primary" data-save="identity">SAVE IDENTITY</button>
-                </div>
+
             </section>
 
-            <!-- ── NETWORK ──────────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-network">
-                <div class="panel-grid">
+            <!-- ════════════════════════════════════════════════════════════
+         DRIVE — Drive Parameters · Response Preview
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-drive">
 
-                    <div class="field-group">
-                        <label class="field-label" for="ap_ssid">ACCESS POINT SSID</label>
-                        <div class="field-hint">SSID broadcast in provisioning mode &mdash; requires reboot.</div>
-                        <input class="field-input" id="ap_ssid" type="text" maxlength="31" placeholder="RobotAP"
-                            autocomplete="off" spellcheck="false">
-                    </div>
-
-                    <div class="field-group">
-                        <label class="field-label" for="ap_password">ACCESS POINT PASSWORD</label>
-                        <div class="field-hint">Min 8 chars, leave blank for open network &mdash; requires reboot.</div>
-                        <div class="input-row">
-                            <input class="field-input" id="ap_password" type="password" maxlength="63"
-                                placeholder="(unchanged)" autocomplete="new-password">
-                            <button class="btn-icon" id="toggleApPw" title="Show/hide"
-                                aria-label="Toggle password visibility">&#128065;</button>
+                <div class="accordion open" id="acc-drive-params">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-drive-params-body">
+                        <span class="acc-title">Drive Parameters</span>
+                        <span class="acc-hint">Deadband · ramp · watchdog</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-drive-params-body">
+                        <div class="field-group">
+                            <label class="field-label" for="drive_deadband">DEADBAND</label>
+                            <div class="field-hint">Stick deflection below this is ignored. Eliminates joystick drift.
+                            </div>
+                            <div class="slider-row">
+                                <input type="range" id="drive_deadband" min="0" max="0.5" step="0.005" value="0.05">
+                                <span class="slider-value" id="drive_deadband_val">0.050</span>
+                            </div>
+                            <div class="slider-ticks">
+                                <span>0.00</span><span>0.10</span><span>0.25</span><span>0.50</span></div>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label" for="drive_ramp_rate">RAMP RATE
+                                <span class="unit">&Delta;/tick</span></label>
+                            <div class="field-hint">Max speed change per 10&nbsp;ms tick. Lower = smoother, more lag.
+                            </div>
+                            <div class="slider-row">
+                                <input type="range" id="drive_ramp_rate" min="0.005" max="1.0" step="0.005"
+                                    value="0.05">
+                                <span class="slider-value" id="drive_ramp_rate_val">0.050</span>
+                            </div>
+                            <div class="slider-ticks">
+                                <span>SLOW</span><span>0.25</span><span>0.50</span><span>INSTANT</span></div>
+                        </div>
+                        <div class="field-group">
+                            <label class="field-label" for="drive_watchdog_ms">COMMAND WATCHDOG
+                                <span class="unit">ms</span></label>
+                            <div class="field-hint">Motors e-stop if no command is received within this window. Min
+                                100&nbsp;ms.</div>
+                            <div class="slider-row">
+                                <input type="range" id="drive_watchdog_ms" min="100" max="5000" step="50" value="500">
+                                <span class="slider-value" id="drive_watchdog_ms_val">500 ms</span>
+                            </div>
+                            <div class="slider-ticks"><span>100</span><span>500</span><span>1000</span><span>5000</span>
+                            </div>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="drive">SAVE DRIVE</button>
                         </div>
                     </div>
-
-                    <div class="field-group">
-                        <label class="field-label" for="ap_channel">AP CHANNEL <span class="unit">0 =
-                                auto</span></label>
-                        <div class="field-hint">Fixed channel reduces scan time. 0 = auto-select.</div>
-                        <div class="slider-row">
-                            <input type="range" id="ap_channel" min="0" max="13" step="1" value="1">
-                            <span class="slider-value" id="ap_channel_val">1</span>
-                        </div>
-                        <div class="slider-ticks">
-                            <span>AUTO</span><span>1</span><span>6</span><span>11</span><span>13</span>
-                        </div>
-                    </div>
-
                 </div>
-                <div class="panel-actions">
-                    <button class="btn btn-primary" data-save="network">SAVE NETWORK</button>
-                </div>
-            </section>
 
-            <!-- ── DRIVE ────────────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-drive">
-                <div class="panel-grid">
-
-                    <div class="field-group">
-                        <label class="field-label" for="drive_deadband">DEADBAND</label>
-                        <div class="field-hint">Stick deflection below this is ignored. Eliminates joystick drift.</div>
-                        <div class="slider-row">
-                            <input type="range" id="drive_deadband" min="0" max="0.5" step="0.005" value="0.05">
-                            <span class="slider-value" id="drive_deadband_val">0.050</span>
-                        </div>
-                        <div class="slider-ticks"><span>0.00</span><span>0.10</span><span>0.25</span><span>0.50</span>
-                        </div>
-                    </div>
-
-                    <div class="field-group">
-                        <label class="field-label" for="drive_ramp_rate">RAMP RATE <span
-                                class="unit">&Delta;/tick</span></label>
-                        <div class="field-hint">Max speed change per 10&nbsp;ms tick. Lower = smoother acceleration,
-                            more
-                            lag.</div>
-                        <div class="slider-row">
-                            <input type="range" id="drive_ramp_rate" min="0.005" max="1.0" step="0.005" value="0.05">
-                            <span class="slider-value" id="drive_ramp_rate_val">0.050</span>
-                        </div>
-                        <div class="slider-ticks">
-                            <span>SLOW</span><span>0.25</span><span>0.50</span><span>INSTANT</span>
-                        </div>
-                    </div>
-
-                    <div class="field-group">
-                        <label class="field-label" for="drive_watchdog_ms">COMMAND WATCHDOG <span
-                                class="unit">ms</span></label>
-                        <div class="field-hint">Motors emergency-stop if no command received within this window. Min
-                            100&nbsp;ms.</div>
-                        <div class="slider-row">
-                            <input type="range" id="drive_watchdog_ms" min="100" max="5000" step="50" value="500">
-                            <span class="slider-value" id="drive_watchdog_ms_val">500 ms</span>
-                        </div>
-                        <div class="slider-ticks"><span>100</span><span>500</span><span>1000</span><span>5000</span>
-                        </div>
-                    </div>
-
-                    <!-- Live motor test strip -->
-                    <div class="field-group full-width">
-                        <div class="field-label">LIVE RESPONSE PREVIEW</div>
-                        <div class="field-hint">Simulates ramp with current settings. Not connected to hardware.</div>
+                <!-- (#1) Motor preview accordion — rAF starts/stops with open state -->
+                <div class="accordion" id="acc-motor-preview">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-motor-preview-body">
+                        <span class="acc-title">Response Preview</span>
+                        <span class="acc-hint">Simulated ramp · no hardware</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-motor-preview-body" hidden>
                         <div class="motor-preview">
                             <div class="motor-track">
                                 <div class="motor-label">L</div>
@@ -190,62 +372,64 @@
                                     <div class="motor-bar" id="motorPreviewR"></div>
                                 </div>
                             </div>
-                            <div class="motor-sim-hint">&larr; drag to test &rarr;</div>
-                            <canvas class="motor-joystick" id="motorJoystick" width="80" height="80"></canvas>
+                            <div class="motor-sim-hint">drag to simulate joystick input</div>
+                            <!-- (#9) Canvas sized by JS to container width, DPI-aware -->
+                            <canvas class="motor-joystick" id="motorJoystick"></canvas>
                         </div>
                     </div>
+                </div>
 
-                </div>
-                <div class="panel-actions">
-                    <button class="btn btn-primary" data-save="drive">SAVE DRIVE PARAMS</button>
-                </div>
             </section>
 
-            <!-- ── TELEMETRY ─────────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-telemetry">
-                <div class="panel-grid">
+            <!-- ════════════════════════════════════════════════════════════
+         TELEMETRY — Parameters · Live Readout
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-telemetry">
 
-                    <div class="field-group">
-                        <label class="field-label" for="telemetry_interval_ms">PUSH INTERVAL <span
-                                class="unit">ms</span></label>
-                        <div class="field-hint">How often telemetry is sent to connected clients.</div>
-                        <div class="slider-row">
-                            <input type="range" id="telemetry_interval_ms" min="50" max="5000" step="50" value="200">
-                            <span class="slider-value" id="telemetry_interval_ms_val">200 ms (5.0 Hz)</span>
+                <div class="accordion open" id="acc-telem-params">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-telem-params-body">
+                        <span class="acc-title">Telemetry Parameters</span>
+                        <span class="acc-hint">Push rate · display timeout</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-telem-params-body">
+                        <div class="field-group">
+                            <label class="field-label" for="telemetry_interval_ms">PUSH INTERVAL
+                                <span class="unit">ms</span></label>
+                            <div class="field-hint">How often the device pushes telemetry to connected clients.</div>
+                            <div class="slider-row">
+                                <input type="range" id="telemetry_interval_ms" min="50" max="5000" step="50"
+                                    value="200">
+                                <span class="slider-value" id="telemetry_interval_ms_val">200 ms (5.0 Hz)</span>
+                            </div>
+                            <div class="slider-ticks"><span>50</span><span>200</span><span>1000</span><span>5000</span>
+                            </div>
                         </div>
-                        <div class="slider-ticks"><span>50</span><span>200</span><span>1000</span><span>5000</span>
+                        <div class="field-group">
+                            <label class="field-label" for="display_sleep_timeout_s">OLED SLEEP TIMEOUT
+                                <span class="unit">s</span></label>
+                            <div class="field-hint">0 = display never sleeps. Sleeping extends panel lifetime.</div>
+                            <div class="slider-row">
+                                <input type="range" id="display_sleep_timeout_s" min="0" max="600" step="10" value="0">
+                                <span class="slider-value" id="display_sleep_timeout_s_val">OFF</span>
+                            </div>
+                            <div class="slider-ticks">
+                                <span>NEVER</span><span>60s</span><span>300s</span><span>600s</span></div>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="telemetry">SAVE TELEMETRY</button>
                         </div>
                     </div>
+                </div>
 
-                    <div class="field-group">
-                        <label class="field-label" for="rssi_warn_dbm">RSSI WARN THRESHOLD <span
-                                class="unit">dBm</span></label>
-                        <div class="field-hint">Log a warning when signal drops below this level.</div>
-                        <div class="slider-row">
-                            <input type="range" id="rssi_warn_dbm" min="-120" max="-30" step="1" value="-75">
-                            <span class="slider-value" id="rssi_warn_dbm_val">&minus;75 dBm</span>
-                        </div>
-                        <div class="slider-ticks"><span>&minus;120
-                                weak</span><span>&minus;75</span><span>&minus;50</span><span>&minus;30 strong</span>
-                        </div>
-                    </div>
-
-                    <div class="field-group">
-                        <label class="field-label" for="display_sleep_timeout_s">OLED SLEEP TIMEOUT <span
-                                class="unit">s</span></label>
-                        <div class="field-hint">0 = display never sleeps. Extends panel lifetime.</div>
-                        <div class="slider-row">
-                            <input type="range" id="display_sleep_timeout_s" min="0" max="600" step="10" value="0">
-                            <span class="slider-value" id="display_sleep_timeout_s_val">OFF</span>
-                        </div>
-                        <div class="slider-ticks"><span>NEVER</span><span>60s</span><span>300s</span><span>600s</span>
-                        </div>
-                    </div>
-
-                    <!-- Live telemetry readout -->
-                    <div class="field-group full-width">
-                        <div class="field-label">LIVE TELEMETRY</div>
-                        <div class="telem-grid" id="telemGrid">
+                <div class="accordion" id="acc-live-telem">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-live-telem-body">
+                        <span class="acc-title">Live Telemetry</span>
+                        <span class="acc-hint">Real-time device readout</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-live-telem-body" hidden>
+                        <div class="telem-grid">
                             <div class="telem-cell">
                                 <div class="telem-key">RSSI</div>
                                 <div class="telem-val" id="t_rssi">&mdash;</div>
@@ -272,150 +456,151 @@
                             </div>
                         </div>
                     </div>
+                </div>
 
-                </div>
-                <div class="panel-actions">
-                    <button class="btn btn-primary" data-save="telemetry">SAVE TELEMETRY PARAMS</button>
-                </div>
             </section>
 
-            <!-- ── SECURITY ──────────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-security">
-                <div class="panel-grid">
+            <!-- ════════════════════════════════════════════════════════════
+         PERIPHERALS — Built-in · Add-on Catalog · Pin Map
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-peripherals">
 
-                    <div class="field-group full-width">
-                        <div class="field-label">OTA AUTH TOKEN
-                            <span class="badge" id="tokenBadge">NOT SET</span>
-                        </div>
-                        <div class="field-hint">
-                            Sent as <span class="mono">X-OTA-Token</span> header with firmware uploads.
-                            Leave blank for open access on trusted networks.
-                        </div>
-                        <div class="input-row">
-                            <input class="field-input mono" id="ota_token" type="password" maxlength="63"
-                                placeholder="(leave blank for no auth)" autocomplete="new-password">
-                            <button class="btn-icon" id="toggleOtaPw" title="Show/hide"
-                                aria-label="Toggle token visibility">&#128065;</button>
-                        </div>
-                        <div class="field-hint" style="margin-top:6px">
-                            Leave blank to keep current token. Enter new value to replace.
+                <div class="accordion open" id="acc-builtin">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-builtin-body">
+                        <span class="acc-title">Built-in Peripherals</span>
+                        <span class="acc-hint">Hardware on this board</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-builtin-body">
+                        <div class="peripheral-list" id="builtinList">
+                            <!-- populated by JS -->
                         </div>
                     </div>
+                </div>
 
-                    <div class="field-group full-width">
-                        <div class="field-label">SECURITY NOTICE</div>
-                        <div class="security-notice">
-                            <div class="notice-row">
-                                <span class="notice-icon">&#9888;</span>
-                                <span>This device operates over plain HTTP. All traffic including credentials is
-                                    unencrypted
-                                    on your LAN.</span>
+                <div class="accordion" id="acc-periph-add">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-periph-add-body">
+                        <span class="acc-title">Add Peripheral</span>
+                        <span class="acc-hint">Sensors · actuators · comms</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-periph-add-body" hidden>
+                        <div class="field-hint">Select a device to add. Pin assignments appear in the built-in list.
+                        </div>
+                        <div class="periph-catalog" id="periphCatalog">
+                            <!-- populated once by initCatalog() -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion" id="acc-pinout">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-pinout-body">
+                        <span class="acc-title">Pin Map</span>
+                        <span class="acc-hint">GPIO occupancy · ESP32-S3</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-pinout-body" hidden>
+                        <div class="pinout-wrap" id="pinoutWrap">
+                            <!-- SVG injected by renderPinout() -->
+                        </div>
+                        <div class="pinout-legend">
+                            <span class="legend-dot used"></span><span>In use</span>
+                            <span class="legend-dot free"></span><span>Free</span>
+                            <span class="legend-dot power"></span><span>Power/GND</span>
+                            <span class="legend-dot special"></span><span>Strapping</span>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- ════════════════════════════════════════════════════════════
+         APPEARANCE — Color Palette
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-appearance">
+
+                <div class="accordion open" id="acc-palette">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-palette-body">
+                        <span class="acc-title">Color Palette</span>
+                        <span class="acc-hint">UI theme · applied live</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-palette-body">
+                        <div class="field-hint">
+                            Click any swatch to open the color picker. Changes apply immediately.
+                            Save to persist across sessions.
+                        </div>
+                        <div class="palette-grid" id="paletteGrid">
+                            <!-- populated by renderPalette() -->
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-ghost" id="btnResetPalette">RESET DEFAULTS</button>
+                            <button class="btn btn-primary" data-save="appearance">SAVE PALETTE</button>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- ════════════════════════════════════════════════════════════
+         SECURITY — OTA Token · Security Notice
+    ════════════════════════════════════════════════════════════════ -->
+            <section class="settings-section" id="section-security">
+
+                <div class="accordion open" id="acc-ota-token">
+                    <button class="accordion-hdr" aria-expanded="true" aria-controls="acc-ota-token-body">
+                        <span class="acc-title">OTA Auth Token</span>
+                        <span class="acc-hint" id="tokenBadgeHint">Not configured</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-ota-token-body">
+                        <div class="field-group">
+                            <div class="field-hint">
+                                Sent as <span class="mono">X-OTA-Token</span> header with firmware uploads.
+                                Leave blank for open access on trusted networks.
                             </div>
-                            <div class="notice-row">
-                                <span class="notice-icon">&#128274;</span>
+                            <div class="input-row" style="margin-top:8px">
+                                <input class="field-input mono" id="ota_token" type="password" maxlength="63"
+                                    placeholder="(leave blank for no auth)" autocomplete="new-password">
+                                <button class="btn-icon" id="toggleOtaPw"
+                                    aria-label="Toggle token visibility">&#128065;</button>
+                            </div>
+                            <div class="field-hint" style="margin-top:6px">
+                                Leave blank to keep the current token. Enter a new value to replace it.
+                            </div>
+                        </div>
+                        <div class="field-actions">
+                            <button class="btn btn-primary" data-save="security">SAVE SECURITY</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion" id="acc-sec-notice">
+                    <button class="accordion-hdr" aria-expanded="false" aria-controls="acc-sec-notice-body">
+                        <span class="acc-title">Security Notice</span>
+                        <span class="acc-hint">HTTP · no TLS on LAN</span>
+                        <span class="acc-chevron">&#8964;</span>
+                    </button>
+                    <div class="accordion-body" id="acc-sec-notice-body" hidden>
+                        <div class="security-notice">
+                            <div class="notice-row"><span class="notice-icon">&#9888;</span>
+                                <span>This device uses plain HTTP. All traffic including credentials is unencrypted on
+                                    the LAN.</span>
+                            </div>
+                            <div class="notice-row"><span class="notice-icon">&#128274;</span>
                                 <span>TLS/HTTPS support is planned for a future firmware release.</span>
                             </div>
-                            <div class="notice-row">
-                                <span class="notice-icon">&#8505;</span>
-                                <span>OTA token comparison uses constant-time equality to prevent timing attacks.</span>
+                            <div class="notice-row"><span class="notice-icon">&#8505;</span>
+                                <span>OTA token comparison uses constant-time XOR to prevent timing oracle
+                                    attacks.</span>
                             </div>
                         </div>
                     </div>
-
                 </div>
-                <div class="panel-actions">
-                    <button class="btn btn-primary" data-save="security">SAVE SECURITY</button>
-                </div>
-            </section>
 
-            <!-- ── SYSTEM ────────────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-system">
-                <div class="panel-grid">
-
-                    <div class="field-group full-width">
-                        <div class="field-label">FIRMWARE UPDATE</div>
-                        <div class="field-hint">Upload a <span class="mono">.bin</span> file produced by <span
-                                class="mono">pio run</span>. Device reboots after flashing.</div>
-                        <div class="ota-zone" id="otaFwZone">
-                            <input type="file" id="otaFwFile" accept=".bin" style="display:none">
-                            <div class="ota-icon">&#128190;</div>
-                            <div class="ota-label">Drop <span class="mono">firmware.bin</span> or <button
-                                    class="btn-link" id="otaFwPick">browse</button></div>
-                            <div class="ota-filename" id="otaFwName"></div>
-                            <div class="ota-progress hidden" id="otaFwProgress">
-                                <div class="progress-track">
-                                    <div class="progress-fill" id="otaFwFill"></div>
-                                </div>
-                                <div class="progress-label" id="otaFwLabel">0%</div>
-                            </div>
-                            <button class="btn btn-warn hidden" id="otaFwBtn">FLASH FIRMWARE</button>
-                        </div>
-                        <div class="build-hint">
-                            <strong>Build path:</strong> <code>.pio/build/&lt;env&gt;/firmware.bin</code><br>
-                            Run <code>pio run -e robot_esp32</code> to produce the binary.
-                        </div>
-                    </div>
-
-                    <div class="field-group full-width">
-                        <div class="field-label">FILESYSTEM UPDATE</div>
-                        <div class="field-hint">Upload a LittleFS image <span class="mono">.bin</span>. No reboot
-                            required
-                            &mdash; mounts immediately.</div>
-                        <div class="ota-zone" id="otaFsZone">
-                            <input type="file" id="otaFsFile" accept=".bin" style="display:none">
-                            <div class="ota-icon">&#127760;</div>
-                            <div class="ota-label">Drop <span class="mono">littlefs.bin</span> or <button
-                                    class="btn-link" id="otaFsPick">browse</button></div>
-                            <div class="ota-filename" id="otaFsName"></div>
-                            <div class="ota-progress hidden" id="otaFsProgress">
-                                <div class="progress-track">
-                                    <div class="progress-fill" id="otaFsFill"></div>
-                                </div>
-                                <div class="progress-label" id="otaFsLabel">0%</div>
-                            </div>
-                            <button class="btn btn-warn hidden" id="otaFsBtn">FLASH FILESYSTEM</button>
-                        </div>
-                        <div class="build-hint">
-                            <strong>Build path:</strong> <code>.pio/build/&lt;env&gt;/littlefs.bin</code><br>
-                            Run <code>pio run -e robot_esp32 -t buildfs</code> to produce the image.
-                        </div>
-                    </div>
-
-                    <div class="field-group full-width">
-                        <div class="field-label">DANGER ZONE</div>
-                        <div class="danger-zone">
-                            <div class="danger-row">
-                                <div>
-                                    <div class="danger-title">REBOOT DEVICE</div>
-                                    <div class="field-hint">Graceful restart. Applied settings take effect.</div>
-                                </div>
-                                <button class="btn btn-warn" id="btnReboot">REBOOT</button>
-                            </div>
-                            <div class="danger-row">
-                                <div>
-                                    <div class="danger-title">FACTORY RESET SETTINGS</div>
-                                    <div class="field-hint">Resets all tunables to firmware defaults. Does not erase
-                                        WiFi
-                                        credentials.</div>
-                                </div>
-                                <button class="btn btn-danger" id="btnFactoryReset">RESET SETTINGS</button>
-                            </div>
-                            <div class="danger-row">
-                                <div>
-                                    <div class="danger-title">ERASE WIFI CREDENTIALS</div>
-                                    <div class="field-hint">Forces provisioning mode on next boot. Device will restart.
-                                    </div>
-                                </div>
-                                <button class="btn btn-danger" id="btnEraseWifi">ERASE + REBOOT</button>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
             </section>
 
         </main>
-
     </div>
 
     <script src="/settings.js" defer></script>
