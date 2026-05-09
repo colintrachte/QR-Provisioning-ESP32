@@ -41,6 +41,25 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+/* ESP32-S3 internal temperature sensor
+ * ─────────────────────────────────────
+ * Available on ESP32-S3, C3, C6, H2 via driver/temperature_sensor.h (IDF 5.x).
+ * On targets without this driver the #ifdef guard compiles it out cleanly;
+ * the "temp" JSON field then falls back to i_sensors data (NAN until an
+ * external sensor is wired in).
+ *
+ * Range config: -10 °C to 80 °C covers normal indoor operating temperatures
+ * and gives ±0.5 °C accuracy. Widen if you expect extreme ambients.
+ */
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) \
+ || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2)
+#  define HEALTH_HAS_INTERNAL_TEMP 1
+#  include "driver/temperature_sensor.h"
+static temperature_sensor_handle_t s_tsens = NULL;
+#else
+#  define HEALTH_HAS_INTERNAL_TEMP 0
+#endif
+
 static const char *TAG = "health";
 
 static int8_t   s_rssi          = 0;
@@ -85,17 +104,43 @@ static void build_json(void)
     uint32_t uptime_s = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS / 1000);
     uint32_t heap     = (uint32_t)esp_get_free_heap_size();
 
+    /* Temperature priority:
+     *   1. Internal ESP32-S3 sensor (always present, no wiring required).
+     *   2. External I2C sensor via i_sensors (future BME280 / SHT31 etc.).
+     *   3. NAN → JSON null (no sensor available).
+     *
+     * The internal sensor reflects die temperature which runs ~5–15 °C above
+     * ambient at idle and more under motor load. This is still useful for
+     * detecting thermal stress even if it does not represent ambient. */
+    float temperature = NAN;
+
+#if HEALTH_HAS_INTERNAL_TEMP
+    if (s_tsens != NULL) {
+        float tsens_out = NAN;
+        esp_err_t err = temperature_sensor_get_celsius(s_tsens, &tsens_out);
+        if (err == ESP_OK && !isnan(tsens_out)) {
+            temperature = tsens_out;
+        } else if (err != ESP_OK) {
+            ESP_LOGD(TAG, "temperature_sensor_get_celsius: %s", esp_err_to_name(err));
+        }
+    }
+#endif
+
+    /* Fall back to external sensor if internal is unavailable */
+    if (isnan(temperature) && !isnan(sd.temperature_c)) {
+        temperature = sd.temperature_c;
+    }
+
     cJSON *obj = cJSON_CreateObject();
     if (!obj) return;   /* OOM — keep serving the previous frame */
 
     cJSON_AddNumberToObject(obj, "rssi",    s_rssi);
     cJSON_AddNumberToObject(obj, "battery", bat_pct);
 
-    /* Temperature: emit JSON null when no sensor present */
-    if (isnan(sd.temperature_c))
+    if (isnan(temperature))
         cJSON_AddNullToObject(obj, "temp");
     else
-        cJSON_AddNumberToObject(obj, "temp", (double)sd.temperature_c);
+        cJSON_AddNumberToObject(obj, "temp", (double)temperature);
 
     cJSON_AddNumberToObject(obj, "uptime", (double)uptime_s);
     cJSON_AddNumberToObject(obj, "heap",   (double)heap);
@@ -106,10 +151,8 @@ static void build_json(void)
     char *serialised = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
 
-    if (!serialised) return;   /* OOM — keep previous frame */
+    if (!serialised) return;
 
-    /* Guard against overflow — HEALTH_JSON_BUF_LEN must be large enough.
-     * 128 B is sufficient for the current field set; log a warning if not. */
     size_t len = strlen(serialised);
     if (len >= HEALTH_JSON_BUF_LEN) {
         ESP_LOGW(TAG, "Telemetry JSON truncated (%u >= %d)",
@@ -120,7 +163,7 @@ static void build_json(void)
     s_json[write_idx][len] = '\0';
     free(serialised);
 
-    s_json_active = write_idx;   /* atomic int store — publishes the new frame */
+    s_json_active = write_idx;
 }
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
@@ -130,6 +173,25 @@ void health_monitor_init(void)
     const i_peripheral_map_t *pm = i_sensors_get_peripheral_map();
     ESP_LOGI(TAG, "health_monitor_init — OLED: %s",
              pm->oled ? "PRESENT" : "ABSENT");
+
+#if HEALTH_HAS_INTERNAL_TEMP
+    temperature_sensor_config_t tsens_cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    esp_err_t err = temperature_sensor_install(&tsens_cfg, &s_tsens);
+    if (err == ESP_OK) {
+        err = temperature_sensor_enable(s_tsens);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "temperature_sensor_enable failed: %s", esp_err_to_name(err));
+            temperature_sensor_uninstall(s_tsens);
+            s_tsens = NULL;
+        } else {
+            ESP_LOGI(TAG, "Internal temperature sensor enabled");
+        }
+    } else {
+        ESP_LOGW(TAG, "temperature_sensor_install failed: %s", esp_err_to_name(err));
+        s_tsens = NULL;
+    }
+#endif
+
     build_json();
 }
 
