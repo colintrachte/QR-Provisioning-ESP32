@@ -860,10 +860,6 @@ function initDangerZone() {
 
   async function doReboot() {
     try {
-      // (#15) Add to app_server.c:
-      //   static esp_err_t handle_api_reboot(httpd_req_t *req) {
-      //     httpd_resp_sendstr(req, "OK");
-      //     vTaskDelay(pdMS_TO_TICKS(300)); esp_restart(); return ESP_OK; }
       const r = await fetch('/api/reboot', { method:'POST' });
       if (r.status === 404) {
         showToast('⚠ /api/reboot not found — see comment in settings.js', 'warn', 8000);
@@ -893,11 +889,6 @@ function initDangerZone() {
       'The device will forget its WiFi network and restart in provisioning mode. You will need to reconnect.'
     )) return;
     try {
-      // (#16) Add to app_server.c:
-      //   static esp_err_t handle_api_erase(httpd_req_t *req) {
-      //     wifi_manager_erase_credentials();
-      //     httpd_resp_sendstr(req, "OK");
-      //     vTaskDelay(pdMS_TO_TICKS(300)); esp_restart(); return ESP_OK; }
       const r = await fetch('/api/erase', { method:'POST' });
       if (r.status === 404) {
         showToast('⚠ /api/erase not found — see comment in settings.js', 'warn', 8000);

@@ -49,6 +49,81 @@ static const char *TAG = "app_server";
 
 /* ── Misc API handlers ─────────────────────────────────────────────────── */
 
+static esp_err_t handle_api_settings_post(httpd_req_t *req)
+{
+
+    if (req->content_len > 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    int ret = httpd_req_recv(req, buf, req->content_len);
+    if (ret <= 0) {
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("robot_cfg", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS open failed");
+        return ESP_FAIL;
+    }
+
+    bool reboot_required = false;
+    const char *reboot_keys[] = {
+        "ap_ssid", "ap_password", "ap_channel",
+        "mdns_enable", "mdns_hostname"
+    };
+    const size_t reboot_keys_len = sizeof(reboot_keys) / sizeof(reboot_keys[0]);
+
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, root) {
+        if (!item->string || !cJSON_IsString(item)) continue;
+        nvs_set_str(nvs, item->string, item->valuestring);
+        for (size_t i = 0; i < reboot_keys_len; i++) {
+            if (strcmp(item->string, reboot_keys[i]) == 0) {
+                reboot_required = true;
+                break;
+            }
+        }
+    }
+
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    cJSON_Delete(root);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    if (reboot_required) {
+        cJSON_AddBoolToObject(resp, "reboot_required", true);
+    }
+
+    char *resp_str = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp_str);
+    free(resp_str);
+    return ESP_OK;
+}
+
 /* POST /api/jserror — forward frontend exceptions to the serial log */
 static esp_err_t handle_api_jserror(httpd_req_t *req)
 {
@@ -93,6 +168,19 @@ static esp_err_t handle_404(httpd_req_t *req)
 {
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not found");
     return ESP_OK;
+}
+static esp_err_t handle_api_erase(httpd_req_t *req)
+{
+    wifi_manager_erase_credentials();
+    httpd_resp_sendstr(req, "OK");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return ESP_OK;
+}
+static esp_err_t handle_api_reboot(httpd_req_t *req)
+{
+    httpd_resp_sendstr(req, "OK");
+    vTaskDelay(pdMS_TO_TICKS(300)); esp_restart(); return ESP_OK;
 }
 
 /* ── Settings API ──────────────────────────────────────────────────────── */
@@ -276,22 +364,6 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     }
 
     httpd_resp_sendstr(req, "Saved — rebooting");
-    vTaskDelay(pdMS_TO_TICKS(300));
-    esp_restart();
-    return ESP_OK;
-}
-
-/* POST /api/erase */
-static esp_err_t handle_api_erase(httpd_req_t *req)
-{
-    nvs_handle_t nvs;
-    if (nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs) == ESP_OK) {
-        nvs_erase_key(nvs, NVS_KEY_SSID);
-        nvs_erase_key(nvs, NVS_KEY_PASS);
-        nvs_commit(nvs);
-        nvs_close(nvs);
-    }
-    httpd_resp_sendstr(req, "Erased — rebooting");
     vTaskDelay(pdMS_TO_TICKS(300));
     esp_restart();
     return ESP_OK;
@@ -482,10 +554,11 @@ esp_err_t app_server_start(void)
         { .uri="/api/scan",      .method=HTTP_GET,  .handler=handle_api_scan     },
         { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect  },
         { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase    },
+        { .uri="/api/reboot",    .method=HTTP_POST, .handler=handle_api_reboot   },
         { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
           .is_websocket=true                                                      },
         { .uri="/api/jserror",   .method=HTTP_POST, .handler=handle_api_jserror  },
-        { .uri="/*",             .method=HTTP_GET,  .handler=handle_404          },
+        { .uri="/api/settings",  .method=HTTP_POST, .handler=handle_api_settings_post },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(s_httpd, &routes[i]);
@@ -493,7 +566,21 @@ esp_err_t app_server_start(void)
     ota_server_register(s_httpd);
     ota_server_mark_valid();
     settings_server_register(s_httpd);
+    // In app_server_start(), after ota_server_register and settings_server_register:
 
+    static const httpd_uri_t catch_all_get = {
+        .uri     = "/*",
+        .method  = HTTP_GET,
+        .handler = handle_404,
+    };
+    static const httpd_uri_t catch_all_post = {
+        .uri     = "/*",
+        .method  = HTTP_POST,
+        .handler = handle_404,
+    };
+
+    httpd_register_uri_handler(s_httpd, &catch_all_get);
+    httpd_register_uri_handler(s_httpd, &catch_all_post);
     ESP_LOGI(TAG, "App server started (port 80)");
     return ESP_OK;
 }
