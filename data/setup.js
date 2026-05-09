@@ -4,11 +4,11 @@
  * API:
  *   GET  /api/scan    → cached AP list JSON (immediate)
  *   GET  /api/rescan  → blocking scan, then JSON (~3 s)
- *   POST /api/connect → body: ssid=<enc>&password=<enc>
+ *   POST /api/connect → body: ssid=<enc>&pass=<enc>
  */
 
 const API_SCAN    = '/api/scan';
-const API_RESCAN  = '/api/rescan';
+const API_RESCAN  = '/api/scan?refresh=1';  /* triggers a new scan; same handler as GET /api/scan */
 const API_CONNECT = '/api/connect';
 
 let g_networks = [];
@@ -98,11 +98,10 @@ async function onRescan() {
     setStatus('Scanning\u2026 stay on this page');
 
     try {
-        const res  = await fetch(API_RESCAN);
-        const data = await res.json();
-        g_networks = data;
-        renderList();
-        setStatus(data.length ? `${data.length} network(s) found` : 'No networks found');
+        /* Kick off a new scan; the response may still say "scanning" while
+         * the radio is busy. Poll loadNetworks() to pick up results. */
+        await fetch(API_RESCAN);
+        await loadNetworks();
     } catch (err) {
         setStatus('Rescan failed');
         console.error(err);
@@ -158,7 +157,8 @@ async function onConnect() {
     elConnect.disabled = true;
     setStatus('Saving\u2026');
 
-    const body = `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(pass)}`;
+    /* Backend parses "pass=" (not "password=") — keep in sync with handle_api_connect() */
+    const body = `ssid=${encodeURIComponent(ssid)}&pass=${encodeURIComponent(pass)}`;
     try {
         const res  = await fetch(API_CONNECT, {
             method:  'POST',

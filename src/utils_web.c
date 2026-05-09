@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include "cJSON.h"
 
 /*
  * utils_web.c — HTTP response helpers and file serving.
@@ -12,6 +13,9 @@
  *   - File serving with optional gzip (Accept-Encoding-aware)
  *   - URL decode
  *   - Small text response helper
+ *   - Shared JSON response helpers (web_send_json, web_send_error)
+ *     used by settings_server.c and any future JSON endpoint, so the
+ *     Content-Type / Cache-Control / CORS header set is defined once.
  *
  * Does NOT own:
  *   - JSON formatting → use cJSON via utils_filesystem helpers
@@ -56,6 +60,45 @@ esp_err_t web_send_text(httpd_req_t *req, const char *text)
 {
     web_set_standard_headers(req, "text/plain", false);
     return httpd_resp_send(req, text, HTTPD_RESP_USE_STRLEN);
+}
+
+/**
+ * web_send_json — serialise a cJSON object, send it, then free it.
+ *
+ * Sets Content-Type: application/json, Cache-Control: no-cache, and
+ * Access-Control-Allow-Origin: * on every response. Frees obj even on
+ * serialisation failure (sends 500 instead). This is the single canonical
+ * JSON response helper shared by all HTTP endpoint modules.
+ */
+esp_err_t web_send_json(httpd_req_t *req, cJSON *obj)
+{
+    if (!obj) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    char *body = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!body) {
+        httpd_resp_send_500(req);
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, body);
+    free(body);
+    return ESP_OK;
+}
+
+/**
+ * web_send_error — send a 400 Bad Request with { "error": "<msg>" }.
+ */
+esp_err_t web_send_error(httpd_req_t *req, const char *msg)
+{
+    httpd_resp_set_status(req, "400 Bad Request");
+    cJSON *obj = cJSON_CreateObject();
+    if (obj) cJSON_AddStringToObject(obj, "error", msg ? msg : "unknown error");
+    return web_send_json(req, obj);
 }
 
 void web_set_standard_headers(httpd_req_t *req, const char *mime, bool is_asset)

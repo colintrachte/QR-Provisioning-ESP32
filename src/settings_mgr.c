@@ -220,6 +220,10 @@ esp_err_t settings_validate(const robot_settings_t *s,
     if (strnlen(s->ota_token, sizeof(s->ota_token)) == sizeof(s->ota_token))
         FAIL("ota_token exceeds %d chars", (int)sizeof(s->ota_token) - 1);
 
+    /* Display sleep timeout: 0 = never sleep, up to 3600 s (1 hour) */
+    if (s->display_sleep_timeout_s > 3600)
+        FAIL("display_sleep_timeout_s out of range [0, 3600]");
+
 #undef FAIL
     return ESP_OK;
 }
@@ -245,6 +249,12 @@ static char *serialise(const robot_settings_t *s)
     cJSON_AddNumberToObject(obj, "rssi_warn_dbm",         s->rssi_warn_dbm);
     cJSON_AddStringToObject(obj, "ota_token",             s->ota_token);
     cJSON_AddNumberToObject(obj, "display_sleep_timeout_s", (double)s->display_sleep_timeout_s);
+    /* Palette: stored as a raw JSON string (already-serialised object).
+     * An empty string means "no palette saved" — omit from output. */
+    if (s->palette[0] != '\0') {
+        cJSON *pal = cJSON_Parse(s->palette);
+        if (pal) cJSON_AddItemToObject(obj, "palette", pal);
+    }
 
     char *out = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
@@ -304,6 +314,19 @@ static void deserialise(const char *json_str, robot_settings_t *dst)
     NUM_FIELD ("rssi_warn_dbm",          rssi_warn_dbm,          int);
     STR_FIELD ("ota_token",              ota_token,              SETTINGS_OTA_TOKEN_MAX);
     NUM_FIELD ("display_sleep_timeout_s",display_sleep_timeout_s,uint32_t);
+
+    /* Palette: stored as a sub-object; re-serialise to the flat string field */
+    {
+        cJSON *pal = cJSON_GetObjectItem(obj, "palette");
+        if (cJSON_IsObject(pal)) {
+            char *pal_str = cJSON_PrintUnformatted(pal);
+            if (pal_str) {
+                strncpy(dst->palette, pal_str, sizeof(dst->palette) - 1);
+                dst->palette[sizeof(dst->palette) - 1] = '\0';
+                free(pal_str);
+            }
+        }
+    }
 
 #undef STR_FIELD
 #undef NUM_FIELD
@@ -495,7 +518,24 @@ const robot_settings_t *settings_get(void)
         apply_defaults(&emergency);
         return &emergency;
     }
+    /* NOTE: The returned pointer is valid only while the caller holds no
+     * concurrent writes. For a safe snapshot across arbitrary fields, use
+     * settings_get_copy() instead. settings_get() is kept for lightweight
+     * single-field reads and for the telemetry fast-path. */
     return &s_settings;
+}
+
+esp_err_t settings_get_copy(robot_settings_t *dst)
+{
+    if (!dst) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized) {
+        apply_defaults(dst);
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    memcpy(dst, &s_settings, sizeof(*dst));
+    xSemaphoreGive(s_mutex);
+    return ESP_OK;
 }
 
 void settings_register_change_cb(settings_change_cb_t cb, void *ctx)

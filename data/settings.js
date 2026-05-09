@@ -164,7 +164,22 @@ async function saveFields(payload, tabKey) {
     }
 
     Object.assign(CFG, payload);
-    if ('ota_token' in payload) CFG.ota_token_set = payload.ota_token !== '';
+    if ('ota_token' in payload) {
+      CFG.ota_token_set = payload.ota_token !== '';
+      /* Cache token presence across page refreshes. The actual token value
+       * is never echoed by the server, so we store only whether it is set.
+       * The token itself is kept in memory (CFG) only for the OTA header;
+       * it is never written to sessionStorage for security. */
+      try {
+        sessionStorage.setItem('ota_token_set', CFG.ota_token_set ? '1' : '0');
+        if (payload.ota_token !== '') {
+          /* Store the actual value for the OTA upload header; cleared on tab close */
+          sessionStorage.setItem('ota_token_value', payload.ota_token);
+        } else {
+          sessionStorage.removeItem('ota_token_value');
+        }
+      } catch (_) { /* sessionStorage unavailable (e.g. private browsing) — ignore */ }
+    }
 
     // (#4) Only show banner when THIS save requires a reboot, not persistently
     if (data.reboot_required || willReboot) {
@@ -232,6 +247,15 @@ function renderAll() {
   setSlider('rssi_warn_dbm', CFG.rssi_warn_dbm ?? -75);
 
   // Security
+  // ota_token_set: prefer server value; fall back to sessionStorage for
+  // cross-refresh persistence (server never echoes the real token).
+  if (CFG.ota_token_set === undefined) {
+    try { CFG.ota_token_set = sessionStorage.getItem('ota_token_set') === '1'; } catch (_) {}
+  }
+  // Re-hydrate the in-memory token for the OTA upload header if available.
+  if (!CFG.ota_token) {
+    try { CFG.ota_token = sessionStorage.getItem('ota_token_value') || ''; } catch (_) {}
+  }
   const hint = $('tokenBadgeHint');
   if (hint) hint.textContent = CFG.ota_token_set ? 'Token configured' : 'Not configured';
 
@@ -332,7 +356,7 @@ function initSaveButtons() {
   // Wire dirty tracking (#10)
   wireDirtyTracking('identity',  ['deviceName_input']);
   wireDirtyTracking('mdns',      ['mdns_hostname', 'mdns_enable']);
-  wireDirtyTracking('network',   ['ap_ssid','ap_password','ap_channel']);
+  wireDirtyTracking('network',   ['ap_ssid','ap_password','ap_channel','ap_password_clear']);
   wireDirtyTracking('drive',     ['drive_deadband','drive_ramp_rate','drive_watchdog_ms']);
   wireDirtyTracking('telemetry', ['telemetry_interval_ms','display_sleep_timeout_s']);
   wireDirtyTracking('signal',    ['rssi_warn_dbm']);
@@ -351,9 +375,15 @@ function collectTab(tab) {
         mdns_enable:   $('mdns_enable').checked,
       };
     case 'network': {
+      const clearPw = $('ap_password_clear')?.checked ?? false;
       const f = { ap_ssid: $('ap_ssid').value.trim(), ap_channel: parseInt($('ap_channel').value, 10) };
-      const pw = $('ap_password').value;
-      if (pw) f.ap_password = pw;
+      if (clearPw) {
+        /* Explicitly clear the AP password — sets it to open network */
+        f.ap_password_clear = true;
+      } else {
+        const pw = $('ap_password').value;
+        if (pw) f.ap_password = pw;
+      }
       return f;
     }
     case 'signal':      return { rssi_warn_dbm: parseInt($('rssi_warn_dbm').value, 10) };
@@ -387,6 +417,8 @@ function validateFields(f) {
     return 'Watchdog must be 100–10000 ms.';
   if ('telemetry_interval_ms' in f && (f.telemetry_interval_ms < 50 || f.telemetry_interval_ms > 10000))
     return 'Telemetry interval must be 50–10000 ms.';
+  if ('display_sleep_timeout_s' in f && (f.display_sleep_timeout_s < 0 || f.display_sleep_timeout_s > 3600))
+    return 'Display sleep timeout must be 0–3600 s.';
   if ('rssi_warn_dbm'      in f && (f.rssi_warn_dbm < -120 || f.rssi_warn_dbm > 0))
     return 'RSSI threshold must be −120 to 0 dBm.';
   return null;
@@ -815,8 +847,13 @@ function setupOtaZone({ zone, input, pick, nameEl, progressEl, fillEl, labelEl, 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', endpoint);
 
-    // (#5) Use the SAVED token (CFG.ota_token), not whatever is currently typed
-    const savedToken = (CFG.ota_token || '').trim();
+    // (#5) Use the SAVED token (CFG.ota_token), falling back to sessionStorage
+    // for the page-refresh case where CFG was repopulated from the server
+    // (which never echoes the real token value).
+    let savedToken = (CFG.ota_token || '').trim();
+    if (!savedToken) {
+      try { savedToken = sessionStorage.getItem('ota_token_value') || ''; } catch (_) {}
+    }
     if (savedToken) xhr.setRequestHeader('X-OTA-Token', savedToken);
 
     xhr.upload.onprogress = ev => {

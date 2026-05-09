@@ -213,13 +213,19 @@
                         </div>
                         <div class="field-group">
                             <label class="field-label" for="ap_password">AP PASSWORD</label>
-                            <div class="field-hint">Min 8 chars or blank for open — requires reboot.</div>
+                            <div class="field-hint">Leave blank to keep the current password. Min 8 chars or set open
+                                below — requires reboot.</div>
                             <div class="input-row">
                                 <input class="field-input" id="ap_password" type="password" maxlength="63"
-                                    placeholder="(unchanged)" autocomplete="new-password">
+                                    placeholder="(leave blank to keep current)" autocomplete="new-password">
                                 <button class="btn-icon" id="toggleApPw"
                                     aria-label="Toggle password visibility">&#128065;</button>
                             </div>
+                            <label class="field-hint"
+                                style="display:flex;align-items:center;gap:8px;margin-top:6px;cursor:pointer;">
+                                <input type="checkbox" id="ap_password_clear">
+                                <span>Clear password — set AP to open (no authentication)</span>
+                            </label>
                         </div>
                         <div class="field-group">
                             <label class="field-label" for="ap_channel">AP CHANNEL
@@ -230,7 +236,8 @@
                                 <span class="slider-value" id="ap_channel_val">1</span>
                             </div>
                             <div class="slider-ticks">
-                                <span>AUTO</span><span>1</span><span>6</span><span>11</span><span>13</span></div>
+                                <span>AUTO</span><span>1</span><span>6</span><span>11</span><span>13</span>
+                            </div>
                         </div>
                         <div class="field-actions">
                             <button class="btn btn-primary" data-save="network">SAVE NETWORK</button>
@@ -318,7 +325,8 @@
                                 <span class="slider-value" id="drive_deadband_val">0.050</span>
                             </div>
                             <div class="slider-ticks">
-                                <span>0.00</span><span>0.10</span><span>0.25</span><span>0.50</span></div>
+                                <span>0.00</span><span>0.10</span><span>0.25</span><span>0.50</span>
+                            </div>
                         </div>
                         <div class="field-group">
                             <label class="field-label" for="drive_ramp_rate">RAMP RATE
@@ -331,7 +339,8 @@
                                 <span class="slider-value" id="drive_ramp_rate_val">0.050</span>
                             </div>
                             <div class="slider-ticks">
-                                <span>SLOW</span><span>0.25</span><span>0.50</span><span>INSTANT</span></div>
+                                <span>SLOW</span><span>0.25</span><span>0.50</span><span>INSTANT</span>
+                            </div>
                         </div>
                         <div class="field-group">
                             <label class="field-label" for="drive_watchdog_ms">COMMAND WATCHDOG
@@ -414,7 +423,8 @@
                                 <span class="slider-value" id="display_sleep_timeout_s_val">OFF</span>
                             </div>
                             <div class="slider-ticks">
-                                <span>NEVER</span><span>60s</span><span>300s</span><span>600s</span></div>
+                                <span>NEVER</span><span>60s</span><span>300s</span><span>600s</span>
+                            </div>
                         </div>
                         <div class="field-actions">
                             <button class="btn btn-primary" data-save="telemetry">SAVE TELEMETRY</button>

@@ -43,7 +43,7 @@
 /* ── Schema version ─────────────────────────────────────────────────────────
  * Bump this integer whenever new fields are added to robot_settings_t.
  * The migration path in settings_mgr.c will apply defaults for any new key. */
-#define SETTINGS_SCHEMA_VERSION  1
+#define SETTINGS_SCHEMA_VERSION  2
 
 /* ── NVS location ───────────────────────────────────────────────────────────*/
 #define SETTINGS_NVS_NS   "settings"
@@ -93,6 +93,10 @@ typedef struct {
 
     /* Display */
     uint32_t display_sleep_timeout_s; /* 0 = never sleep, default 0         */
+    /* UI theme palette — stored as a serialised JSON object string.
+     * Empty string means "use firmware defaults" (no saved palette).
+     * 512 bytes is enough for ~10 CSS variables at "#rrggbb" each. */
+    char palette[512];
 
 } robot_settings_t;
 
@@ -167,5 +171,16 @@ void settings_register_change_cb(settings_change_cb_t cb, void *ctx);
  * Returns ESP_OK if all fields are within acceptable ranges/lengths.
  * On failure, err_buf (if non-NULL) is filled with a human-readable reason.
  */
-esp_err_t settings_validate(const robot_settings_t *s,
-                             char *err_buf, size_t err_buf_len);
+esp_err_t settings_validate(const robot_settings_t *s,char *err_buf, size_t err_buf_len);
+/**
+ * settings_get_copy — copy current settings under mutex into *dst.
+ *
+ * Use this instead of settings_get() when you need a consistent snapshot
+ * of multiple fields (e.g. in an HTTP handler that runs for >1 tick while
+ * settings_update() could race on another task).
+ *
+ * Returns ESP_OK on success, ESP_ERR_INVALID_ARG if dst is NULL,
+ * ESP_ERR_INVALID_STATE if settings_load() has not been called yet
+ * (dst is filled with defaults in that case).
+ */
+esp_err_t settings_get_copy(robot_settings_t *dst);

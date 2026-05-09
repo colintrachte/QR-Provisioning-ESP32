@@ -1,63 +1,62 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0f1117">
-  <title>WiFi Setup</title>
-  <link rel="preload" href="/base.css" as="style">
-  <link rel="preload" href="/setup.css" as="style">
-  <link rel="stylesheet" href="/base.css">
-  <link rel="stylesheet" href="/setup.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f1117">
+    <title>WiFi Setup</title>
+    <link rel="preload" href="/base.css" as="style">
+    <link rel="preload" href="/setup.css" as="style">
+    <link rel="stylesheet" href="/base.css">
+    <link rel="stylesheet" href="/setup.css">
 </head>
+
 <body>
-  <div class="card">
-    <div class="logo">&#128246;</div>
-    <h1>WiFi Setup</h1>
-    <p class="subtitle">Connect this device to your network</p>
+    <div class="card">
+        <div class="logo">&#128246;</div>
+        <h1>WiFi Setup</h1>
+        <p class="subtitle">Connect this device to your network</p>
 
-    <p class="section-label">
-      Available networks
-      <button class="rescan-btn" id="btn-rescan">&#8635; Rescan</button>
-    </p>
+        <p class="section-label">
+            Available networks
+            <button class="rescan-btn" id="btn-rescan">&#8635; Rescan</button>
+        </p>
 
-    <!-- Spinner: shown while scanning -->
-    <p id="spinner" class="scan-status" style="display:none">Scanning&hellip;</p>
+        <!-- Spinner: shown while scanning -->
+        <p id="spinner" class="scan-status" style="display:none">Scanning&hellip;</p>
 
-    <div id="network-list">
-      <p class="scan-status">Scanning&hellip;</p>
+        <div id="network-list">
+            <p class="scan-status">Scanning&hellip;</p>
+        </div>
+
+        <form id="connect-form">
+            <label for="ssid">Network name</label>
+            <input type="text" id="ssid" name="ssid" placeholder="Or type manually" autocomplete="off" autocorrect="off"
+                autocapitalize="none" spellcheck="false" required>
+
+            <label for="password">Password</label>
+            <div class="pass-wrap">
+                <input type="password" id="password" name="password" placeholder="Leave blank if open network"
+                    autocomplete="current-password">
+                <button type="button" class="toggle-pass" aria-label="Show/hide password">&#128065;</button>
+            </div>
+
+            <button type="submit" id="btn-connect">Save &amp; Connect</button>
+            <p class="status" id="status"></p>
+        </form>
+
+        <div class="skip-wrap">
+            <span class="skip-label">Already connected?</span>
+            <a id="skip-btn" class="skip-link" href="#">Test robot now &rarr;</a>
+        </div>
+
+        <p class="hint">
+            After saving, the device will reboot and join your network.<br>
+            To reconfigure: hold BOOT 3&nbsp;s at power-up.
+        </p>
     </div>
-
-    <form id="connect-form">
-      <label for="ssid">Network name</label>
-      <input type="text" id="ssid" name="ssid"
-             placeholder="Or type manually"
-             autocomplete="off" autocorrect="off"
-             autocapitalize="none" spellcheck="false"
-             required>
-
-      <label for="password">Password</label>
-      <div class="pass-wrap">
-        <input type="password" id="password" name="password"
-               placeholder="Leave blank if open network"
-               autocomplete="current-password">
-        <button type="button" class="toggle-pass" aria-label="Show/hide password">&#128065;</button>
-      </div>
-
-      <button type="submit" id="btn-connect">Save &amp; Connect</button>
-      <p class="status" id="status"></p>
-    </form>
-
-    <div class="skip-wrap">
-      <span class="skip-label">Already connected?</span>
-      <a id="skip-btn" class="skip-link" href="#">Test robot now &rarr;</a>
-    </div>
-
-    <p class="hint">
-      After saving, the device will reboot and join your network.<br>
-      To reconfigure: hold BOOT 3&nbsp;s at power-up.
-    </p>
-  </div>
-  <script src="/setup.js" defer></script>
+    <script src="/setup.js" defer></script>
 </body>
+
 </html>

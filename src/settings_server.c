@@ -35,6 +35,7 @@
 
 #include "settings_server.h"
 #include "settings_mgr.h"
+#include "utils_web.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -51,41 +52,12 @@ static const char *TAG = "settings_srv";
 #define SETTINGS_SERVER_BODY_MAX  1024
 
 /* ── JSON helpers ────────────────────────────────────────────────────────────*/
-
-/**
- * Send a JSON object as the HTTP response body.
- * Frees obj even on serialisation failure (sends 500 instead).
- */
-static esp_err_t send_json(httpd_req_t *req, cJSON *obj)
-{
-    if (!obj) {
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-    char *body = cJSON_PrintUnformatted(obj);
-    cJSON_Delete(obj);
-    if (!body) {
-        httpd_resp_send_500(req);
-        return ESP_OK;
-    }
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_sendstr(req, body);
-    free(body);
-    return ESP_OK;
-}
-
-/**
- * Send a JSON error response: { "error": "<msg>" }
- */
-static esp_err_t send_error(httpd_req_t *req, const char *msg)
-{
-    httpd_resp_set_status(req, "400 Bad Request");
-    cJSON *obj = cJSON_CreateObject();
-    if (obj) cJSON_AddStringToObject(obj, "error", msg ? msg : "unknown error");
-    return send_json(req, obj);
-}
+/* send_json() and send_error() are now web_send_json() / web_send_error()
+ * from utils_web.h — the canonical shared implementation that sets
+ * Content-Type, Cache-Control, and CORS headers in one place.
+ * Local aliases keep the call-sites below unchanged. */
+#define send_json(req, obj) web_send_json((req), (obj))
+#define send_error(req, msg) web_send_error((req), (msg))
 
 /**
  * Serialise a robot_settings_t into a cJSON object.
@@ -114,6 +86,13 @@ static cJSON *settings_to_json(const robot_settings_t *s)
     /* OTA token: indicate presence without exposing value */
     cJSON_AddBoolToObject  (obj, "ota_token_set",          s->ota_token[0] != '\0');
     cJSON_AddNumberToObject(obj, "display_sleep_timeout_s",(double)s->display_sleep_timeout_s);
+
+    /* Palette: re-parse the stored JSON string back into an object so the
+     * client receives it as a proper JSON sub-object, not a string. */
+    if (s->palette[0] != '\0') {
+        cJSON *pal = cJSON_Parse(s->palette);
+        if (pal) cJSON_AddItemToObject(obj, "palette", pal);
+    }
 
     return obj;
 }
@@ -155,6 +134,13 @@ static bool apply_json_to_settings(const cJSON *src, robot_settings_t *dst)
     bool   old_mdns_enable;
     char   old_mdns_hostname[SETTINGS_MDNS_HOST_MAX];
 
+    /* Zero-initialise snapshot buffers so strncmp is safe even if the source
+     * string is shorter than the buffer (strncpy does not pad beyond src len
+     * on all implementations, so a dirty stack could produce false positives). */
+    memset(old_ap_ssid,      0, sizeof(old_ap_ssid));
+    memset(old_ap_password,  0, sizeof(old_ap_password));
+    memset(old_mdns_hostname,0, sizeof(old_mdns_hostname));
+
     strncpy(old_ap_ssid,     dst->ap_ssid,      sizeof(old_ap_ssid)     - 1);
     strncpy(old_ap_password, dst->ap_password,  sizeof(old_ap_password) - 1);
     old_ap_channel    = dst->ap_channel;
@@ -166,12 +152,19 @@ static bool apply_json_to_settings(const cJSON *src, robot_settings_t *dst)
     APPLY_STR ("ap_ssid",                ap_ssid,                SETTINGS_AP_SSID_MAX);
 
     /* Password: only update if the client sent a non-empty value.
-     * An empty string means "keep existing password". */
+     * An empty string means "keep existing password".
+     * A boolean "ap_password_clear": true explicitly clears the password
+     * (sets the AP to open), taking precedence over the ap_password field. */
     {
-        cJSON *pw = cJSON_GetObjectItem(src, "ap_password");
-        if (cJSON_IsString(pw) && pw->valuestring && pw->valuestring[0] != '\0') {
-            strncpy(dst->ap_password, pw->valuestring, sizeof(dst->ap_password) - 1);
-            dst->ap_password[sizeof(dst->ap_password) - 1] = '\0';
+        cJSON *clear = cJSON_GetObjectItem(src, "ap_password_clear");
+        if (cJSON_IsTrue(clear)) {
+            memset(dst->ap_password, 0, sizeof(dst->ap_password));
+        } else {
+            cJSON *pw = cJSON_GetObjectItem(src, "ap_password");
+            if (cJSON_IsString(pw) && pw->valuestring && pw->valuestring[0] != '\0') {
+                strncpy(dst->ap_password, pw->valuestring, sizeof(dst->ap_password) - 1);
+                dst->ap_password[sizeof(dst->ap_password) - 1] = '\0';
+            }
         }
     }
 
@@ -183,8 +176,35 @@ static bool apply_json_to_settings(const cJSON *src, robot_settings_t *dst)
     APPLY_NUM ("drive_watchdog_ms",      drive_watchdog_ms,      uint32_t);
     APPLY_NUM ("telemetry_interval_ms",  telemetry_interval_ms,  uint32_t);
     APPLY_NUM ("rssi_warn_dbm",          rssi_warn_dbm,          int);
-    APPLY_STR ("ota_token",              ota_token,              SETTINGS_OTA_TOKEN_MAX);
+
+    /* OTA token: only update if the client sent a non-empty value.
+     * An empty string means "keep existing token" — same semantics as
+     * ap_password. This prevents accidentally clearing the token when the
+     * field is left blank because the server never echoes the real value. */
+    {
+        cJSON *tok = cJSON_GetObjectItem(src, "ota_token");
+        if (cJSON_IsString(tok) && tok->valuestring && tok->valuestring[0] != '\0') {
+            strncpy(dst->ota_token, tok->valuestring, sizeof(dst->ota_token) - 1);
+            dst->ota_token[sizeof(dst->ota_token) - 1] = '\0';
+        }
+    }
+
     APPLY_NUM ("display_sleep_timeout_s",display_sleep_timeout_s,uint32_t);
+
+    /* Palette: the client sends a JSON sub-object; serialise it to the flat
+     * string field. An absent or non-object value leaves the stored palette
+     * unchanged. */
+    {
+        cJSON *pal = cJSON_GetObjectItem(src, "palette");
+        if (cJSON_IsObject(pal)) {
+            char *pal_str = cJSON_PrintUnformatted(pal);
+            if (pal_str) {
+                strncpy(dst->palette, pal_str, sizeof(dst->palette) - 1);
+                dst->palette[sizeof(dst->palette) - 1] = '\0';
+                free(pal_str);
+            }
+        }
+    }
 
 #undef APPLY_STR
 #undef APPLY_NUM
@@ -252,9 +272,13 @@ static esp_err_t handle_post_settings(httpd_req_t *req)
         return send_error(req, "Invalid JSON");
     }
 
-    /* Merge onto a working copy of current settings */
+    /* Merge onto a mutex-guarded snapshot of current settings.
+     * settings_get_copy() is preferred over settings_get() here because
+     * the POST handler is long-running (parse + validate + NVS write) and
+     * a concurrent settings_update() could produce a torn read from the
+     * raw singleton pointer. */
     robot_settings_t merged;
-    memcpy(&merged, settings_get(), sizeof(merged));
+    settings_get_copy(&merged);
 
     bool reboot_required = apply_json_to_settings(incoming, &merged);
     cJSON_Delete(incoming);
