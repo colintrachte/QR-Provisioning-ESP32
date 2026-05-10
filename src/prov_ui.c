@@ -269,7 +269,6 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx)
         s_status_msg[0] = '\0';
         render_qr_screen(QR_WIFI, "Join AP:",
                          AP_SSID, AP_PASSWORD[0] ? AP_PASSWORD : "(open)");
-        render_status_bar("WiFi failed \xe2\x80\x94 retry?");
         break;
 
     case WIFI_MANAGER_STATE_ERROR:

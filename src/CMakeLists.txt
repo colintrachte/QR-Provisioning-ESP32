@@ -13,6 +13,9 @@ idf_component_register(
         "../data/settings.js.gz"
         "../data/settings.css.gz"
         "../data/favicon.svg.gz"
+        "../data/setup.html.gz"
+        "../data/setup.css.gz"
+        "../data/setup.js.gz"
     REQUIRES
         mdns
         joltwallet__littlefs    # This links the joltwallet/littlefs component

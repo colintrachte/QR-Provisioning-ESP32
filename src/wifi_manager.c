@@ -136,8 +136,8 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             s_connected = false;
             wifi_event_sta_disconnected_t *disc =
                 (wifi_event_sta_disconnected_t *)data;
-            ESP_LOGW(TAG, "STA disconnected (reason %d), retry %d/%d",
-                     disc->reason, s_retry_count, s_cfg.sta_max_retries);
+            ESP_LOGW(TAG, "STA disconnected reason=%d retry=%d/%d",
+                        disc->reason, s_retry_count, s_cfg.sta_max_retries);
 
             if (s_retry_count < s_cfg.sta_max_retries) {
                 s_retry_count++;
@@ -184,6 +184,9 @@ static void ap_configure(void)
     } else {
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
+
+    // ADD THESE TWO LINES:
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
 
     s_ap_state = MGR_AP_ACTIVE;
     ESP_LOGI(TAG, "SoftAP configured: SSID=%s ch=%d",
@@ -235,15 +238,18 @@ static void reset_wifi_for_ap(void)
         s_cfg.on_radio_reset(s_cfg.cb_ctx);
 }
 
-static void on_sta_connected(void)
+static void on_sta_connected(bool kill_ap)   // <-- add parameter
 {
     fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
     fire_connected();
 
     app_server_start();
-    // Kill the AP — no longer needed once STA is up
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    ESP_LOGI(TAG, "AP stopped — STA-only mode");
+
+    if (kill_ap) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        ESP_LOGI(TAG, "AP stopped — STA-only mode");
+    }
+
 #if MDNS_ENABLE
     if (mdns_init() == ESP_OK) {
         mdns_hostname_set(MDNS_HOSTNAME);
@@ -262,13 +268,14 @@ static void mgr_task(void *arg)
     if (nvs_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
         fire_state(WIFI_MANAGER_STATE_CONNECTING_SAVED);
         if (sta_connect(ssid, pass)) {
-            on_sta_connected();
+            on_sta_connected(true);
             vTaskDelete(NULL);
             return;
         }
         ESP_LOGW(TAG, "Saved credentials failed — falling back to portal");
     }
 
+    // Hard reset only once, before the portal loop starts
     reset_wifi_for_ap();
     ap_configure();
     fire_state(WIFI_MANAGER_STATE_AP_STARTED);
@@ -284,17 +291,16 @@ static void mgr_task(void *arg)
 
         if (sta_connect(ssid, pass)) {
             nvs_save(ssid, pass);
-            on_sta_connected();
+            on_sta_connected(true);
             vTaskDelete(NULL);
             return;
         }
 
+        // STA failed — AP is still up and client is still connected.
+        // Do NOT call reset_wifi_for_ap() here — just restart the portal.
         fire_state(WIFI_MANAGER_STATE_STA_FAILED);
-        ESP_LOGW(TAG, "STA connection failed — restarting portal");
-
-        reset_wifi_for_ap();
-        ap_configure();
-        fire_state(WIFI_MANAGER_STATE_AP_STARTED);
+        ESP_LOGW(TAG, "Bad credentials — restarting portal, AP stays up");
+        // Loop back to portal_start() — no radio reset needed
     }
 }
 
