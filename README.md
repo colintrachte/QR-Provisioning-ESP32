@@ -367,7 +367,7 @@ _These prevent bricks and make field debugging possible. Do these first._
 
 _These reduce friction for non-technical users and cut your support burden._
 
-- [ ] **🔴M Runtime user settings (JSON in NVS/LittleFS)** — Hostname, motor deadband, UI template, timezone, notification topic. Survives OTA. Stop recompiling `config.h` for every change.
+- [x] **🔴M Runtime user settings (JSON in NVS/LittleFS)** — Hostname, motor deadband, UI template, timezone, notification topic. Survives OTA. Stop recompiling `config.h` for every change.
 - [ ] **🔴M Standalone flash tool** — Python/Go CLI that auto-detects USB, queries GitHub Releases, downloads correct `.bin`, flashes with bundled `esptool.py`. One command for non-technical users.
 - [ ] **🔵M Portal hibernation** — After N minutes of inactivity, reduce AP TX power or stop DNS task to save power. Wake on GPIO0 press or client reconnect.
 - [ ] **🔵S UI template switching** — Store template name in settings; serve matching HTML/CSS/JS. Template #1 = RC tank (current). Template #2 = sensor dashboard. Template #3 = autonomous waypoint editor.
@@ -399,7 +399,7 @@ _These turn the robot from a LAN toy into an internet-aware device._
 - [ ] **🔵M Push notifications (ntfy.sh)** — Optional alerts to phone: "Battery low", "Motor stall", "WiFi disconnected". User configures topic in settings. No app build needed.
 - [ ] **🔵M Home Assistant / MQTT** — Publish telemetry to configurable broker. Accept command topics (`robot/cmd/stop`, `robot/cmd/led`). Auto-discover via HA MQTT integration.
 - [ ] **🔵S NTP time sync** — Sync RTC on boot and every 4 h. Enables timestamped logs, scheduled autonomous missions, accurate uptime reporting. (ESP-IDF `esp_sntp.h` makes this small effort.)
-- [ ] **🔵M WebSocket vs UDP evaluation** — Prototype UDP control channel. Measure latency + jitter under load vs current WebSocket. Decide before committing to UDP for low-latency use cases.
+- [x] **🔵M WebSocket vs UDP evaluation** — Prototype UDP control channel. Measure latency + jitter under load vs current WebSocket. Decide before committing to UDP for low-latency use cases.
 - [ ] **🟢L BLE provisioning path** — Alternative to SoftAP for phones that handle BLE pairing better than captive portals. ESP32-S3 has BLE 5.0. Keep SoftAP as fallback.
 - [ ] **🟢L LoRa integration** — Join [Meshtastic](https://meshtastic.org/) network or custom point-to-point protocol. Must enforce regional duty-cycle limits (EU 1%, US ISM unrestricted). Requires separate radio HAL.
 - [ ] **🟢L Device-to-device control** — One ESP32 as controller, another as actuator over WiFi (UDP/WS) or LoRa. Pairing via QR code or NFC bump.
