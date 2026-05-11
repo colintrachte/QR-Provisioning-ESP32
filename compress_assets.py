@@ -135,3 +135,4 @@ def compress_assets(source, target, env):
 
 env.AddPreAction("buildfs",  compress_assets)
 env.AddPreAction("uploadfs", compress_assets)
+env.AddPreAction("buildprog", compress_assets)
