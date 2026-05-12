@@ -52,3 +52,8 @@ void ctrl_drive_tick(void);
  * Used for emergency stop from WebSocket disconnect or WDT.
  */
 void ctrl_drive_emergency_stop(void);
+
+/**
+ * Gets the current normalized output for the left and right motors (-1.0 to 1.0).
+ */
+void ctrl_drive_get_outputs(float *left, float *right);

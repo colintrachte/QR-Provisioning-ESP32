@@ -131,9 +131,6 @@ esp_err_t o_led_init(void)
              LED_GPIO, (unsigned)LED_LEDC_FREQ_HZ);
     return ESP_OK;
 }
-/*
-Why do we use a float for brightness when we could have used uint23_t from the start?
-*/
 void o_led_set(float brightness)
 {
     if (!s_initialized) return;

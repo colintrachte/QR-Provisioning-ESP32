@@ -51,7 +51,9 @@
 
 #include "ctrl_drive.h"
 #include "o_motors.h"
+#include "o_led.h"
 #include "settings_mgr.h"
+#include "app_server.h"
 #include "config.h"
 
 #include <math.h>
@@ -151,7 +153,7 @@ void ctrl_drive_set_axes(float x, float y)
 void ctrl_drive_set_armed(bool armed)
 {
     s_armed = armed;
-    if (!armed) {
+    if (!s_armed) {
         s_target_x_fp = 0;
         s_target_y_fp = 0;
     }
@@ -162,9 +164,11 @@ bool ctrl_drive_is_armed(void)
 {
     return s_armed;
 }
-
+    static int log_divider = 0;
 void ctrl_drive_tick(void)
 {
+    ESP_LOGD(TAG, "Target X FP: %d", s_target_x_fp);
+    ESP_LOGD(TAG, "Target Y FP: %d", s_target_y_fp);
     /* ── Watchdog check ──────────────────────────────────────────────────── */
     if (s_armed && s_watchdog_ok) {
         uint32_t elapsed    = now_ms() - s_last_cmd_ms;
@@ -175,6 +179,8 @@ void ctrl_drive_tick(void)
             s_armed       = false;
             s_watchdog_ok = false;
             ctrl_drive_emergency_stop();
+            o_led_blink(LED_PATTERN_FAST_BLINK);
+            app_server_push_arm_state(false, "watchdog");
             return;
         }
     }
@@ -198,6 +204,12 @@ void ctrl_drive_tick(void)
     float want_right = clampf(y - x, -1.0f, 1.0f);
 
     /* Advance ramp */
+    if (log_divider++ % 10 == 0) { // Log once per second
+        ESP_LOGD(TAG, "System is %s", s_armed ? "ARMED" : "DISARMED");
+        ESP_LOGI(TAG, "Want L: %f", want_left);
+        ESP_LOGI(TAG, "Want R: %f", want_right);
+    }
+
     s_current_left  = ramp(s_current_left,  want_left);
     s_current_right = ramp(s_current_right, want_right);
 
@@ -222,7 +234,6 @@ void ctrl_drive_get_outputs(float *left, float *right)
     if (left)  *left  = s_current_left;
     if (right) *right = s_current_right;
 }
-
 
 void ctrl_drive_emergency_stop(void)
 {

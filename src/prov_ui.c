@@ -22,6 +22,11 @@
 #include "i_battery.h"
 #include "settings_mgr.h"
 #include "config.h"
+#include "ui_icons.h"
+#include <math.h>            /* For fabsf() and isnan() */
+#include "health_monitor.h"  /* For health_monitor_get_rssi() */
+#include "ctrl_drive.h"     /* For ctrl_drive_is_armed() and outputs */
+#include "i_sensors.h"       /* For i_sensor_data_t and i_sensors_get_data() */
 
 #include <string.h>
 #include <stdio.h>
@@ -72,6 +77,60 @@ static volatile int s_ws_clients = 0;   /* written by httpd task, read by main l
 
 /* ── Internal renderers ─────────────────────────────────────────────────────*/
 
+static void draw_icon(int x, int y, const uint8_t *icon)
+{
+    for (int row = 0; row < 8; row++)
+    {
+        uint8_t bits = icon[row];
+
+        for (int col = 0; col < 8; col++)
+        {
+            if (bits & (1 << (7 - col)))
+            {
+                u8g2_DrawPixel(display_get_u8g2(),
+                               x + col,
+                               y + row);
+            }
+        }
+    }
+}
+
+static void draw_motor_bar(int x,
+                           int y,
+                           int w,
+                           int h,
+                           float output)
+{
+    if (output >  1.0f) output =  1.0f;
+    if (output < -1.0f) output = -1.0f;
+    int half = w / 2;
+    int fill = (int)(fabsf(output) * half);
+
+    display_draw_rect(x, y, w, h);
+
+    /* center divider */
+    display_draw_vline(x + half, y, h);
+
+    if (fill <= 0)
+        return;
+
+    if (output > 0.0f)
+    {
+        display_fill_rect(x + half + 1,
+                          y + 1,
+                          fill,
+                          h - 2,
+                          true);
+    }
+    else
+    {
+        display_fill_rect(x + half - fill,
+                          y + 1,
+                          fill,
+                          h - 2,
+                          true);
+    }
+}
 /* Redraws the persisted status message in the bottom bar. Called at the end
  * of every full-screen render so a racing status update is never lost.
  *
@@ -185,15 +244,68 @@ static void render_connecting(const char *ssid)
  */
 static void render_connected(void)
 {
-    if (!s_ip[0]) return;
-
     display_clear();
 
     if (s_ws_clients > 0)
     {
+        //old UI
+        /*
         display_draw_text(0, CONN_LABEL_Y, "Connected:",  DISP_FONT_NORMAL);
         display_draw_text(0, CONN_IP_Y,    s_ip,          DISP_FONT_MEDIUM);
         display_draw_text(0, CONN_SSID_Y,  s_ssid,        DISP_FONT_SMALL);
+        */
+        //new UI
+        uint8_t bat_pct = i_battery_percent();
+        int8_t rssi     = health_monitor_get_rssi();
+        bool armed      = ctrl_drive_is_armed();
+
+        float mot_l = 0.0f;
+        float mot_r = 0.0f;
+
+        ctrl_drive_get_outputs(&mot_l, &mot_r);
+
+        /* Top row */
+        display_draw_text(0, 0, s_ssid, DISP_FONT_SMALL);
+
+        draw_icon(82, 0, ui_icon_get_battery(bat_pct));
+        draw_icon(94, 0, ui_icon_get_wifi(rssi));
+
+        draw_icon(106,
+                0,
+                armed ? ICON_ARMED
+                        : ICON_DISARMED);
+
+        /* IP */
+        display_draw_text(0, 14, s_ip, DISP_FONT_SMALL);
+
+        /* Temperature warning */
+        i_sensor_data_t sd = i_sensors_get_data();
+
+        if (!isnan(sd.temperature_c) &&
+            sd.temperature_c > 60.0f)
+        {
+            draw_icon(118, 0, ICON_TEMP_WARN);
+        }
+
+        /* Motor indicators */
+        draw_icon(0, 30, ICON_MOTOR_L);
+        ESP_LOGI(TAG, "L: %.2f", mot_l);
+        draw_motor_bar(10,
+                    31,
+                    42,
+                    8,
+                    mot_l);
+
+        draw_icon(68, 30, ICON_MOTOR_R);
+        ESP_LOGI(TAG, "R: %.2f", mot_r);
+        draw_motor_bar(78,
+                    31,
+                    42,
+                    8,
+                    mot_r);
+
+        /* Bottom status line */
+        render_chrome();
     }
     else
     {
@@ -329,9 +441,19 @@ void prov_ui_set_client_count(int count)
         render_connected();
 }
 
-void prov_ui_tick(void)
-{
-    /* No-op — all transitions are event-driven via prov_ui_on_state_change(). */
-    //if we ever need to do something on a timer tick, this is where it would go
-    //be very careful about doing too much work here since it runs in the main loop and can delay critical tasks like battery monitoring and low-voltage shutdown
+void prov_ui_tick(void) {
+    static float last_l = 0, last_r = 0;
+    float cur_l, cur_r;
+    ctrl_drive_get_outputs(&cur_l, &cur_r);
+
+    // Only redraw if there is a meaningful change (> 2%) or every 1 second anyway
+    static uint32_t last_full_update = 0;
+    bool moved = (fabsf(cur_l - last_l) > 0.02f || fabsf(cur_r - last_r) > 0.02f);
+
+    if (s_ws_clients > 0 && (moved || (esp_log_timestamp() - last_full_update > 1000))) {
+        render_connected();
+        last_l = cur_l;
+        last_r = cur_r;
+        last_full_update = esp_log_timestamp();
+    }
 }

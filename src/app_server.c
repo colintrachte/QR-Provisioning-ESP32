@@ -353,6 +353,9 @@ static esp_err_t handle_api_connect(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Forward declaration — defined after app_server_start() below */
+void app_server_push_arm_state(bool armed, const char *reason);
+
 /* ── WebSocket client tracking ─────────────────────────────────────────── */
 #define MAX_WS_CLIENTS 4
 
@@ -434,17 +437,6 @@ static void dispatch_text(httpd_req_t *req, const char *msg)
     ESP_LOGD(TAG, "Unknown WS text: %s", msg);
 }
 
-static void dispatch_binary(const uint8_t *data, size_t len)
-{
-    if (len < 5 || data[0] != WS_MSG_AXES) return;
-
-    int16_t ix = (int16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8));
-    int16_t iy = (int16_t)((uint16_t)data[3] | ((uint16_t)data[4] << 8));
-
-    ctrl_drive_feed_watchdog();
-    ctrl_drive_set_axes(ix * 0.0001f, iy * 0.0001f);
-}
-
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
@@ -467,25 +459,69 @@ static esp_err_t ws_handler(httpd_req_t *req)
 
     if (frame.len == 0) return ESP_OK;
 
+    /* --- Consolidated Binary Handling --- */
     if (frame.type == HTTPD_WS_TYPE_BINARY) {
+        // Our control messages (Axes=5 bytes, Arm=2 bytes) fit easily in 16 bytes
         if (frame.len > 16) return ESP_OK;
+
         uint8_t bin[16];
         frame.payload = bin;
         err = httpd_ws_recv_frame(req, &frame, frame.len);
-        if (err == ESP_OK) dispatch_binary(bin, frame.len);
+        if (err != ESP_OK) return err;
+
+        uint8_t msg_type = bin[0];
+        switch (msg_type) {
+            case 0x01: // WS_MSG_AXES
+                if (frame.len >= 5) {
+                    int16_t x_raw, y_raw;
+                    memcpy(&x_raw, &bin[1], 2);
+                    memcpy(&y_raw, &bin[3], 2);
+
+                    float x = (float)x_raw / 32767.0f;
+                    float y = (float)y_raw / 32767.0f;
+
+                    ctrl_drive_set_axes(x, y);
+                    ctrl_drive_feed_watchdog();
+                }
+                break;
+
+            case 0x02: // WS_MSG_ARM
+                if (frame.len >= 2) {
+                    bool should_arm = (bin[1] == 0x01);
+                    ctrl_drive_set_armed(should_arm);
+                    if (should_arm) {
+                        ctrl_drive_feed_watchdog();
+                        o_led_blink(LED_PATTERN_HEARTBEAT);
+                    } else {
+                        o_led_blink(LED_PATTERN_SLOW_BLINK);
+                    }
+                    // Echo confirmed state back to all clients so every tab stays in sync
+                    app_server_push_arm_state(should_arm, NULL);
+                    ESP_LOGI(TAG, "Drive system: %s", should_arm ? "ARMED" : "DISARMED");
+                }
+                break;
+        }
         return ESP_OK;
     }
 
+    /* --- Text Handling (JSON etc.) --- */
     if (frame.type != HTTPD_WS_TYPE_TEXT) return ESP_OK;
 
     uint8_t *buf = calloc(1, frame.len + 1);
     if (!buf) return ESP_ERR_NO_MEM;
+
     frame.payload = buf;
     err = httpd_ws_recv_frame(req, &frame, frame.len);
-    if (err != ESP_OK) { free(buf); ws_client_remove(fd); return err; }
+    if (err != ESP_OK) {
+        free(buf);
+        ws_client_remove(fd);
+        return err;
+    }
+
     buf[frame.len] = '\0';
     dispatch_text(req, (char *)buf);
     free(buf);
+
     return ESP_OK;
 }
 
@@ -614,6 +650,44 @@ void app_server_push_telemetry(void)
             ESP_LOGD(TAG, "Pruned dead WS fd=%d (total=%d)", live[i], count);
         }
     }
+}
+
+/**
+ * Broadcast an armed-state change to all connected WS clients.
+ * reason: "watchdog", "estop", "client", or any short string. NULL = no reason field.
+ * Call this whenever the firmware unilaterally changes arm state so the UI can
+ * reflect it immediately without waiting for the next telemetry push.
+ */
+void app_server_push_arm_state(bool armed, const char *reason)
+{
+    if (!s_httpd || s_ws_count == 0) return;
+
+    cJSON *obj = cJSON_CreateObject();
+    if (!obj) return;
+    cJSON_AddBoolToObject(obj, "armed", armed);
+    if (!armed && reason) cJSON_AddStringToObject(obj, "disarm_reason", reason);
+
+    char *body = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!body) return;
+
+    int live[MAX_WS_CLIENTS];
+    int nlive = 0;
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_WS_CLIENTS; i++)
+        if (s_ws_fds[i] >= 0) live[nlive++] = s_ws_fds[i];
+    xSemaphoreGive(s_ws_mutex);
+
+    httpd_ws_frame_t frame = {
+        .type    = HTTPD_WS_TYPE_TEXT,
+        .payload = (uint8_t *)body,
+        .len     = strlen(body),
+    };
+    for (int i = 0; i < nlive; i++)
+        httpd_ws_send_frame_async(s_httpd, live[i], &frame);
+
+    free(body);
+    ESP_LOGI(TAG, "Pushed arm state: armed=%d reason=%s", (int)armed, reason ? reason : "none");
 }
 
 int app_server_get_client_count(void)

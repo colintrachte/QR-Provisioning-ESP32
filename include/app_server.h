@@ -28,7 +28,7 @@
  */
 
 #include "esp_err.h"
-
+#include <stdbool.h>
 /**
  * Start the HTTP file server and WebSocket handler on port 80.
  * Call after wifi_manager_start() succeeds and portal_stop() has been called.
@@ -51,3 +51,4 @@ void app_server_push_telemetry(void);
 
 /** Return the number of currently open WebSocket connections. */
 int app_server_get_client_count(void);
+void app_server_push_arm_state(bool armed, const char *reason);

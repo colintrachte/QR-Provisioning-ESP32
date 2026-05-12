@@ -163,6 +163,11 @@ function setArmed(v) {
     D.armBtn.className     = 'arm-btn ' + (v ? 'armed' : 'disarmed');
     D.armLabel.textContent = v ? 'ARMED' : 'DISARMED';
     D.zone.classList.toggle('disarmed', !v);
+    // --- BINARY ARMING SIGNAL ---
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        const armBuf = new Uint8Array([0x02, v ? 0x01 : 0x00]);
+        ws.send(armBuf);
+    }
     if (!v) {
         zeroAxes();
         resetKeys();
@@ -188,6 +193,7 @@ function connectWS() {
 
     ws.onclose = () => {
         setConnState(false);
+        if (S.armed) setArmed(false);   // never stay armed while disconnected
         zeroAxes();
         resetKeys();
         clearTimeout(pingTimer);
@@ -215,6 +221,13 @@ function connectWS() {
             if (msg.heap    !== undefined) { S.heap    = msg.heap;    changed = true; }
             if (msg.errors  !== undefined) { S.errors  = msg.errors;  changed = true; }
             if (msg.estop   !== undefined) { updateEstop(msg.estop, msg.resume); }
+            // Firmware-initiated arm state change (e.g. watchdog disarm)
+            if (msg.armed !== undefined && msg.armed !== S.armed) {
+                setArmed(msg.armed);
+                if (!msg.armed && msg.disarm_reason) {
+                    showDisarmToast(msg.disarm_reason);
+                }
+            }
             if (changed) scheduleRaf();
         } catch (_) { /* ignore malformed */ }
     };
@@ -363,6 +376,33 @@ document.addEventListener('keyup', e => {
     KEY_RAMP[k].held = false;
     ensureRamp();
 });
+
+/* ── Disarm toast ────────────────────────────────────────────────────────── */
+let _toastTimer = null;
+function showDisarmToast(reason) {
+    let toast = document.getElementById('disarm-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'disarm-toast';
+        toast.style.cssText = [
+            'position:fixed', 'bottom:24px', 'left:50%', 'transform:translateX(-50%)',
+            'background:var(--clr-danger,#e74c3c)', 'color:#fff',
+            'padding:10px 20px', 'border-radius:8px', 'font-size:14px',
+            'font-weight:600', 'z-index:9999', 'pointer-events:none',
+            'transition:opacity 0.3s', 'white-space:nowrap',
+        ].join(';');
+        document.body.appendChild(toast);
+    }
+    const labels = {
+        watchdog: 'Disarmed — command timeout (watchdog)',
+        estop:    'Disarmed — emergency stop',
+        client:   'Disarmed — client disconnected',
+    };
+    toast.textContent = '⚠ ' + (labels[reason] || ('Disarmed: ' + reason));
+    toast.style.opacity = '1';
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 4000);
+}
 
 /* ── E-stop ──────────────────────────────────────────────────────────────── */
 function updateEstop(estop, resume) {

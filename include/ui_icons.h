@@ -20,3 +20,6 @@ extern const uint8_t ICON_TEMP_WARN[8];
 
 extern const uint8_t ICON_MOTOR_L[8];
 extern const uint8_t ICON_MOTOR_R[8];
+
+const uint8_t* ui_icon_get_battery(uint8_t percentage);
+const uint8_t* ui_icon_get_wifi(int8_t rssi);
