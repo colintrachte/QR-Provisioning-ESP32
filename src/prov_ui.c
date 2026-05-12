@@ -332,4 +332,6 @@ void prov_ui_set_client_count(int count)
 void prov_ui_tick(void)
 {
     /* No-op — all transitions are event-driven via prov_ui_on_state_change(). */
+    //if we ever need to do something on a timer tick, this is where it would go
+    //be very careful about doing too much work here since it runs in the main loop and can delay critical tasks like battery monitoring and low-voltage shutdown
 }
