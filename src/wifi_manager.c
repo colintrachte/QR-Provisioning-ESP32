@@ -282,6 +282,7 @@ static void mgr_task(void *arg)
 
     while (1) {
         portal_start(s_cfg.ap_ssid);
+        s_ap_state = MGR_AP_SHUTTING_DOWN;//change what is displayed on the screen, but don't change wifi until connection succeeds
         portal_stop();
         portal_get_credentials(ssid, pass);
         fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
