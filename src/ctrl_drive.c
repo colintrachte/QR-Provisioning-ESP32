@@ -208,6 +208,22 @@ void ctrl_drive_tick(void)
     }
 }
 
+/**
+ * @brief Read the current ramped motor outputs.
+ *
+ * Returns the values after ramp limiting and clamping, i.e. what is
+ * currently being sent to o_motors_drive(). Useful for UI feedback.
+ *
+ * @param[out] left   Current left motor output, -1.0..1.0
+ * @param[out] right  Current right motor output, -1.0..1.0
+ */
+void ctrl_drive_get_outputs(float *left, float *right)
+{
+    if (left)  *left  = s_current_left;
+    if (right) *right = s_current_right;
+}
+
+
 void ctrl_drive_emergency_stop(void)
 {
     s_target_x_fp   = 0;
