@@ -19,6 +19,8 @@
 #include "display.h"
 #include "qr_gen.h"
 #include "wifi_manager.h"
+#include "i_battery.h"
+#include "settings_mgr.h"
 #include "config.h"
 
 #include <string.h>
@@ -71,11 +73,25 @@ static volatile int s_ws_clients = 0;   /* written by httpd task, read by main l
 /* ── Internal renderers ─────────────────────────────────────────────────────*/
 
 /* Redraws the persisted status message in the bottom bar. Called at the end
- * of every full-screen render so a racing status update is never lost. */
+ * of every full-screen render so a racing status update is never lost.
+ *
+ * Battery low overrides the normal status message — it is prefixed so the
+ * operator knows immediately why the bar changed without the normal msg
+ * being silently dropped. */
 static void render_chrome(void)
 {
-    if (s_status_msg[0])
+    uint8_t bat_pct  = i_battery_percent();
+    int     warn_pct = settings_get()->battery_warn_pct;
+    bool    bat_low  = ((int)bat_pct <= warn_pct);
+
+    if (bat_low) {
+        char bat_msg[32];
+        snprintf(bat_msg, sizeof(bat_msg), "LOW BAT %u%%", bat_pct);
+        display_clear_region(0, STATUS_CLR_Y, DISP_WIDTH, DISP_HEIGHT - STATUS_CLR_Y);
+        display_draw_text(2, STATUS_TEXT_Y, bat_msg, DISP_FONT_SMALL);
+    } else if (s_status_msg[0]) {
         display_draw_text(2, STATUS_TEXT_Y, s_status_msg, DISP_FONT_SMALL);
+    }
 }
 
 /**
@@ -137,8 +153,8 @@ static void render_status_bar(const char *msg)
     }
 
     display_clear_region(0, STATUS_CLR_Y, DISP_WIDTH, DISP_HEIGHT - STATUS_CLR_Y);
-    if (s_status_msg[0])
-        display_draw_text(2, STATUS_TEXT_Y, s_status_msg, DISP_FONT_SMALL);
+    /* render_chrome() handles the battery-low override priority. */
+    render_chrome();
     display_flush();
 }
 

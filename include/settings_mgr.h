@@ -43,7 +43,7 @@
 /* ── Schema version ─────────────────────────────────────────────────────────
  * Bump this integer whenever new fields are added to robot_settings_t.
  * The migration path in settings_mgr.c will apply defaults for any new key. */
-#define SETTINGS_SCHEMA_VERSION  2
+#define SETTINGS_SCHEMA_VERSION  3
 
 /* ── NVS location ───────────────────────────────────────────────────────────*/
 #define SETTINGS_NVS_NS   "settings"
@@ -87,6 +87,7 @@ typedef struct {
     /* Telemetry / health */
     uint32_t telemetry_interval_ms;  /* push period, default 200 (5 Hz)     */
     int      rssi_warn_dbm;          /* log warning below this, default -75  */
+    int      battery_warn_pct;       /* OLED + telemetry flag below this, default 20 */
 
     /* OTA security */
     char    ota_token[SETTINGS_OTA_TOKEN_MAX];       /* "" = no auth         */

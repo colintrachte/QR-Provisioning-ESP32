@@ -137,6 +137,14 @@ static void build_json(void)
     cJSON_AddNumberToObject(obj, "rssi",    s_rssi);
     cJSON_AddNumberToObject(obj, "battery", bat_pct);
 
+    /* Battery low flag — surfaced as a boolean in the JSON so the UI and
+     * OLED status bar can react without re-implementing the threshold. */
+    int warn_pct = settings_get()->battery_warn_pct;
+    bool bat_low = (bat_pct <= (uint8_t)warn_pct);
+    cJSON_AddBoolToObject(obj, "battery_low", bat_low);
+    if (bat_low)
+        ESP_LOGW(TAG, "Battery low: %u%% (threshold %d%%)", bat_pct, warn_pct);
+
     if (isnan(temperature))
         cJSON_AddNullToObject(obj, "temp");
     else

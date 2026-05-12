@@ -134,6 +134,12 @@ static void apply_defaults(robot_settings_t *s)
     s->rssi_warn_dbm = -75;
 #endif
 
+#ifdef BATTERY_WARN_PCT
+    s->battery_warn_pct = BATTERY_WARN_PCT;
+#else
+    s->battery_warn_pct = 20;
+#endif
+
     /* OTA auth */
 #ifdef OTA_AUTH_TOKEN
     strncpy(s->ota_token, OTA_AUTH_TOKEN, sizeof(s->ota_token) - 1);
@@ -216,6 +222,9 @@ esp_err_t settings_validate(const robot_settings_t *s,
     if (s->rssi_warn_dbm < -120 || s->rssi_warn_dbm > 0)
         FAIL("rssi_warn_dbm out of range [-120, 0]");
 
+    if (s->battery_warn_pct < 0 || s->battery_warn_pct > 100)
+        FAIL("battery_warn_pct out of range [0, 100]");
+
     /* OTA token length */
     if (strnlen(s->ota_token, sizeof(s->ota_token)) == sizeof(s->ota_token))
         FAIL("ota_token exceeds %d chars", (int)sizeof(s->ota_token) - 1);
@@ -247,6 +256,7 @@ static char *serialise(const robot_settings_t *s)
     cJSON_AddNumberToObject(obj, "drive_watchdog_ms",     (double)s->drive_watchdog_ms);
     cJSON_AddNumberToObject(obj, "telemetry_interval_ms", (double)s->telemetry_interval_ms);
     cJSON_AddNumberToObject(obj, "rssi_warn_dbm",         s->rssi_warn_dbm);
+    cJSON_AddNumberToObject(obj, "battery_warn_pct",      s->battery_warn_pct);
     cJSON_AddStringToObject(obj, "ota_token",             s->ota_token);
     cJSON_AddNumberToObject(obj, "display_sleep_timeout_s", (double)s->display_sleep_timeout_s);
     /* Palette: stored as a raw JSON string (already-serialised object).
@@ -312,6 +322,7 @@ static void deserialise(const char *json_str, robot_settings_t *dst)
     NUM_FIELD ("drive_watchdog_ms",      drive_watchdog_ms,      uint32_t);
     NUM_FIELD ("telemetry_interval_ms",  telemetry_interval_ms,  uint32_t);
     NUM_FIELD ("rssi_warn_dbm",          rssi_warn_dbm,          int);
+    NUM_FIELD ("battery_warn_pct",       battery_warn_pct,       int);
     STR_FIELD ("ota_token",              ota_token,              SETTINGS_OTA_TOKEN_MAX);
     NUM_FIELD ("display_sleep_timeout_s",display_sleep_timeout_s,uint32_t);
 

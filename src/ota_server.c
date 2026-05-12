@@ -29,14 +29,72 @@
 #include "config.h"
 
 #include <string.h>
+#include <stdint.h>
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_littlefs.h"
+#include "mbedtls/sha256.h"
 
 static const char *TAG = "ota_server";
 
 #define OTA_CHUNK_SIZE   4096   /* bytes read per httpd_req_recv() call */
+
+/* ── Graceful shutdown hook ─────────────────────────────────────────────────
+ * Registered via ota_server_set_shutdown_cb(). Called before esp_restart()
+ * so the caller can close the HTTP server and send WS close frames, giving
+ * the browser time to display "updating…" instead of a hung connection. */
+static ota_shutdown_cb_t s_shutdown_cb   = NULL;
+static void             *s_shutdown_ctx  = NULL;
+
+void ota_server_set_shutdown_cb(ota_shutdown_cb_t cb, void *ctx)
+{
+    s_shutdown_cb  = cb;
+    s_shutdown_ctx = ctx;
+}
+
+/* Invoke the shutdown hook (if registered) then restart. */
+static void graceful_restart(void)
+{
+    if (s_shutdown_cb) {
+        s_shutdown_cb(s_shutdown_ctx);
+        /* Allow the callback time to flush WS close frames and drain TCP. */
+        vTaskDelay(pdMS_TO_TICKS(800));
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    esp_restart();
+}
+
+/* ── SHA-256 hex helpers ────────────────────────────────────────────────────
+ * Reads the X-OTA-SHA256 request header (64 hex chars = 32 bytes).
+ * Returns false if the header is absent or malformed. */
+static bool parse_sha256_header(httpd_req_t *req, uint8_t out[32])
+{
+    char hex[65] = {0};
+    if (httpd_req_get_hdr_value_str(req, "X-OTA-SHA256",
+                                    hex, sizeof(hex)) != ESP_OK) {
+        return false;   /* header absent — skip verification */
+    }
+    if (strlen(hex) != 64) {
+        ESP_LOGW(TAG, "X-OTA-SHA256 wrong length (%u)", (unsigned)strlen(hex));
+        return false;
+    }
+    for (int i = 0; i < 32; i++) {
+        unsigned byte;
+        if (sscanf(hex + 2 * i, "%02x", &byte) != 1) return false;
+        out[i] = (uint8_t)byte;
+    }
+    return true;
+}
+
+static bool sha256_matches(const uint8_t computed[32], const uint8_t expected[32])
+{
+    /* Constant-time compare — same rationale as the token check. */
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) diff |= computed[i] ^ expected[i];
+    return diff == 0;
+}
 
 /* ── Auth check ─────────────────────────────────────────────────────────────
  * Returns true if auth passes (token matches or no token configured).
@@ -90,6 +148,12 @@ static esp_err_t handle_ota_firmware(httpd_req_t *req)
     int content_len = req->content_len;
     ESP_LOGI(TAG, "Firmware OTA start (%d bytes)", content_len);
 
+    /* Optional SHA-256 verification — absent header skips the check. */
+    uint8_t expected_sha[32];
+    bool    verify_sha = parse_sha256_header(req, expected_sha);
+    if (verify_sha)
+        ESP_LOGI(TAG, "SHA-256 verification enabled");
+
     const esp_partition_t *update_part =
         esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
@@ -115,6 +179,10 @@ static esp_err_t handle_ota_firmware(httpd_req_t *req)
     int received = 0;
     bool failed  = false;
 
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0 /* SHA-256, not SHA-224 */);
+
     while (received < content_len) {
         int to_read = content_len - received;
         if (to_read > OTA_CHUNK_SIZE) to_read = OTA_CHUNK_SIZE;
@@ -126,6 +194,8 @@ static esp_err_t handle_ota_firmware(httpd_req_t *req)
             break;
         }
 
+        mbedtls_sha256_update(&sha_ctx, (const unsigned char *)buf, n);
+
         err = esp_ota_write(ota_handle, buf, n);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(err));
@@ -133,6 +203,24 @@ static esp_err_t handle_ota_firmware(httpd_req_t *req)
             break;
         }
         received += n;
+    }
+
+    /* Verify checksum before committing — abort if mismatch. */
+    if (!failed && verify_sha) {
+        uint8_t computed[32];
+        mbedtls_sha256_finish(&sha_ctx, computed);
+        mbedtls_sha256_free(&sha_ctx);
+
+        if (!sha256_matches(computed, expected_sha)) {
+            ESP_LOGE(TAG, "SHA-256 mismatch — aborting OTA");
+            esp_ota_abort(ota_handle);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "SHA-256 checksum mismatch — upload corrupted");
+            return ESP_OK;
+        }
+        ESP_LOGI(TAG, "SHA-256 verified OK");
+    } else {
+        mbedtls_sha256_free(&sha_ctx);
     }
 
     if (failed) {
@@ -162,9 +250,8 @@ static esp_err_t handle_ota_firmware(httpd_req_t *req)
     ESP_LOGI(TAG, "Firmware OTA complete (%d bytes) — rebooting", received);
     httpd_resp_sendstr(req, "OK — rebooting");
 
-    /* Small delay so the response reaches the browser before the reset. */
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    /* Graceful shutdown: send WS close frames, then restart. */
+    graceful_restart();
     return ESP_OK;
 }
 
@@ -207,6 +294,14 @@ static esp_err_t handle_ota_filesystem(httpd_req_t *req)
     bool     failed   = false;
     esp_err_t err;
 
+    /* Optional SHA-256 verification */
+    uint8_t expected_sha[32];
+    bool    verify_sha = parse_sha256_header(req, expected_sha);
+
+    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha256_init(&sha_ctx);
+    mbedtls_sha256_starts(&sha_ctx, 0);
+
     /* Unmount LittleFS before writing. All in-flight file operations on
      * other tasks must have completed — the WS handler doesn't open files
      * so this is safe during normal operation. */
@@ -218,6 +313,7 @@ static esp_err_t handle_ota_filesystem(httpd_req_t *req)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Erase failed: %s", esp_err_to_name(err));
         failed = true;   /* skip write loop, fall through to remount */
+        mbedtls_sha256_free(&sha_ctx);
     }
 
     while (!failed && received < content_len) {
@@ -227,6 +323,8 @@ static esp_err_t handle_ota_filesystem(httpd_req_t *req)
         int n = httpd_req_recv(req, buf, to_read);
         if (n <= 0) { failed = true; break; }
 
+        mbedtls_sha256_update(&sha_ctx, (const unsigned char *)buf, n);
+
         err = esp_partition_write(fs_part, received, buf, n);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "partition write failed at %d: %s",
@@ -235,6 +333,21 @@ static esp_err_t handle_ota_filesystem(httpd_req_t *req)
             break;
         }
         received += n;
+    }
+
+    /* Verify checksum if header was provided */
+    if (!failed && verify_sha) {
+        uint8_t computed[32];
+        mbedtls_sha256_finish(&sha_ctx, computed);
+        mbedtls_sha256_free(&sha_ctx);
+        if (!sha256_matches(computed, expected_sha)) {
+            ESP_LOGE(TAG, "Filesystem SHA-256 mismatch — partition may be corrupt");
+            failed = true;
+        } else {
+            ESP_LOGI(TAG, "Filesystem SHA-256 verified OK");
+        }
+    } else if (!failed) {
+        mbedtls_sha256_free(&sha_ctx);
     }
 
     /* Always remount — even after a failed write, the filesystem must be

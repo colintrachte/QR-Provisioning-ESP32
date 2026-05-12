@@ -32,6 +32,25 @@
 #include "esp_http_server.h"
 
 /**
+ * Callback invoked by ota_server just before esp_restart() during a firmware
+ * OTA. Use it to close the HTTP server and send WebSocket close frames so the
+ * browser can display "updating…" instead of a hung connection.
+ *
+ * The callback has ~800 ms to complete before the reset fires.
+ * Do not call settings_save() or any NVS operation from inside it.
+ *
+ * @param ctx  Opaque pointer passed to ota_server_set_shutdown_cb().
+ */
+typedef void (*ota_shutdown_cb_t)(void *ctx);
+
+/**
+ * Register a pre-restart shutdown hook.
+ * Pass NULL to clear. Replaces any previously registered callback.
+ * Call from app_server_start() alongside ota_server_register().
+ */
+void ota_server_set_shutdown_cb(ota_shutdown_cb_t cb, void *ctx);
+
+/**
  * Register OTA endpoints on an already-started httpd instance.
  * Call from app_server_start() after httpd_start().
  *

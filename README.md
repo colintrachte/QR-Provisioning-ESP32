@@ -35,6 +35,7 @@ WiFi provisioning and RC control firmware for [**Heltec WiFi LoRa 32 V3**](https
 - [Quick Start](#quick-start)
 - [Firmware Architecture](#firmware-architecture)
 - [OTA Updates](#ota-updates)
+  - [OTA Checksum Verification](#ota-checksum-verification)
 - [Robot Control Page](#robot-control-page)
 - [Troubleshooting](#troubleshooting)
 - [Open Work / Roadmap](#open-work--roadmap)
@@ -243,9 +244,16 @@ After flashing, the bootloader boots the new image in a _pending verify_ state. 
 ### Flashing Commands
 
 ```bash
-# Firmware
+# Firmware (no checksum)
 curl -X POST http://<device-ip>/ota/firmware \
   -H "Content-Type: application/octet-stream" \
+  --data-binary @.pio/build/robot_esp32/firmware.bin
+
+# Firmware (with checksum — recommended)
+DIGEST=$(sha256sum .pio/build/robot_esp32/firmware.bin | awk '{print $1}')
+curl -X POST http://<device-ip>/ota/firmware \
+  -H "Content-Type: application/octet-stream" \
+  -H "X-OTA-SHA256: $DIGEST" \
   --data-binary @.pio/build/robot_esp32/firmware.bin
 
 # Web UI (no reboot)
@@ -253,6 +261,75 @@ curl -X POST http://<device-ip>/ota/filesystem \
   -H "Content-Type: application/octet-stream" \
   --data-binary @.pio/build/robot_esp32/littlefs.bin
 ```
+
+---
+
+## OTA Checksum Verification
+
+### How it works
+
+Both OTA endpoints (`/ota/firmware` and `/ota/filesystem`) optionally verify a SHA-256 digest of the upload before committing it to flash. The digest is computed **streaming** — the same buffer used to write each 4 kB chunk is also fed into a running `mbedtls_sha256_context` — so RAM overhead is identical with or without verification.
+
+The verification sequence for `/ota/firmware`:
+
+```
+for each 4 kB chunk:
+    sha256_update(chunk)     ← runs alongside the flash write
+    esp_ota_write(chunk)
+
+sha256_finish() → computed digest
+compare(computed, X-OTA-SHA256 header)  ← constant-time
+    mismatch → esp_ota_abort(), return 400   ← active partition untouched
+    match    → esp_ota_end(), set_boot_partition(), reboot
+```
+
+The comparison is constant-time (byte-by-byte XOR accumulator, same pattern as the auth token check) so it does not leak information about how many bytes matched.
+
+The header is **optional**. If `X-OTA-SHA256` is absent the upload proceeds without verification, so existing scripts continue to work unchanged.
+
+### For end users
+
+If you flash via the `curl` commands in this README, add the checksum header. On Linux/macOS:
+
+```bash
+DIGEST=$(sha256sum firmware.bin | awk '{print $1}')
+curl -X POST http://<device-ip>/ota/firmware \
+  -H "X-OTA-SHA256: $DIGEST" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @firmware.bin
+```
+
+On Windows (PowerShell):
+
+```powershell
+$digest = (Get-FileHash firmware.bin -Algorithm SHA256).Hash.ToLower()
+Invoke-RestMethod -Uri "http://<device-ip>/ota/firmware" `
+  -Method Post `
+  -Headers @{ "X-OTA-SHA256" = $digest; "Content-Type" = "application/octet-stream" } `
+  -InFile firmware.bin
+```
+
+**What happens if the checksum fails:** The device returns `400 Bad Request` with body `SHA-256 checksum mismatch — upload corrupted`. The currently running firmware is unchanged and the device does not reboot. Re-flash with a fresh download of the `.bin`.
+
+**What checksum verification does not protect against:** A deliberate attacker who controls your LAN can still send a valid firmware image with a matching digest. This feature guards against accidental corruption (bad WiFi, truncated transfer, SD card bit-rot) — not against malicious flashing. For that, use `OTA_AUTH_TOKEN` and HTTPS (future roadmap item).
+
+### For developers
+
+**Changing the hash algorithm.** The implementation uses `mbedtls/sha256.h`, which is available in IDF 5.x and hardware-accelerated on ESP32-S3 via Espressif's `sha256_alt` backend. In IDF 6.x, Espressif is migrating toward the PSA Crypto API (`psa/crypto.h`). When you upgrade to IDF 6, replace the `mbedtls_sha256_*` calls in `ota_server.c` with the equivalent `psa_hash_*` calls — the header `X-OTA-SHA256` and the 64-hex-char format stay the same.
+
+**Integrating into a build script.** The digest must be the SHA-256 of the raw `.bin` file, formatted as 64 lowercase hex characters (no `0x` prefix, no spaces). Any standard `sha256sum` / `shasum -a 256` / `Get-FileHash` output works. If you are building a deploy script, compute the digest immediately after `pio run` completes so the `.bin` on disk matches what you are sending.
+
+**Adding checksum to the filesystem upload.** The filesystem handler supports the same `X-OTA-SHA256` header. Use it when deploying UI updates through automation:
+
+```bash
+DIGEST=$(sha256sum .pio/build/robot_esp32/littlefs.bin | awk '{print $1}')
+curl -X POST http://<device-ip>/ota/filesystem \
+  -H "X-OTA-SHA256: $DIGEST" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @.pio/build/robot_esp32/littlefs.bin
+```
+
+**Troubleshooting checksum errors.** If you get a 400 on a transfer that looks clean, check that you are hashing the file **after** the PlatformIO build completes and are not accidentally sending a stale `.bin` from a previous build. The most common cause is a build script that recomputes the digest before `pio run` finishes writing the output file.
 
 ### Partition Layouts
 
@@ -304,14 +381,15 @@ Served on port 80 after STA connects.
 
 **Firmware → Client (JSON telemetry):**
 
-| Field     | Type          | Description            |
-| --------- | ------------- | ---------------------- |
-| `rssi`    | int           | WiFi signal dBm        |
-| `battery` | int           | Battery %              |
-| `temp`    | float \| null | Temperature °C         |
-| `uptime`  | int           | Seconds since boot     |
-| `heap`    | int           | Free heap bytes        |
-| `errors`  | int           | Cumulative error count |
+| Field         | Type          | Description                          |
+| ------------- | ------------- | ------------------------------------ |
+| `rssi`        | int           | WiFi signal dBm                      |
+| `battery`     | int           | Battery %                            |
+| `battery_low` | bool          | True when battery ≤ `battery_warn_pct` |
+| `temp`        | float \| null | Temperature °C                       |
+| `uptime`      | int           | Seconds since boot                   |
+| `heap`        | int           | Free heap bytes                      |
+| `errors`      | int           | Cumulative error count               |
 
 ---
 
@@ -347,13 +425,13 @@ Served on port 80 after STA connects.
 
 _These prevent bricks and make field debugging possible. Do these first._
 
-- [ ] **🔴S OTA checksum verification** — SHA-256 download + MD5 transfer integrity before `esp_ota_end()`. Prevents bricks from corrupted transfers.
-- [ ] **🔴S Task + heap watchdogs** — Enable FreeRTOS task watchdog (5 s timeout) and heap corruption detection. Catches infinite loops and memory corruption without physical reset.
+- [x] **🔴S OTA checksum verification** — SHA-256 streamed during upload, verified before `esp_ota_end()`. Prevents bricks from corrupted transfers.
+- [x] **🔴S Task + heap watchdogs** — FreeRTOS task watchdog (5 s timeout, panic) and light heap corruption detection enabled in `sdkconfig.defaults`.
 - [ ] **🔴S Embed frontend into firmware binary** — Gzip SPA at build time, convert to C byte array. Serve from ROM. One OTA updates everything; no more "forgot `uploadfs`" failures.
 - [ ] **🔵M Persistent event logging** — Compressed JSONL ring buffer on flash (last 5 sessions, ~100 KB each). Browsable/downloadable from UI. Optional remote syslog. Debug field issues without a serial cable.
 - [x] **🔵S Factory reset from UI** — Settings page button + GPIO0 hold → erase WiFi creds, reset to defaults, reboot into portal. Currently only GPIO0 works.
-- [ ] **🔵S Graceful WS shutdown before OTA reboot** — Close the HTTP server and send WS close frames before `esp_restart()` so the browser UI shows "updating" instead of a hung connection.
-- [ ] **🔵S Battery low warning** — Surface `BATTERY_WARN_PCT` threshold in telemetry JSON and on the OLED status bar. Prevents deep-discharge damage in the field.
+- [x] **🔵S Graceful WS shutdown before OTA reboot** — HTTP server stopped and WS close frames sent before `esp_restart()`. Browser shows "updating" instead of a hung connection.
+- [x] **🔵S Battery low warning** — `battery_warn_pct` threshold surfaced in telemetry JSON (`battery_low` bool) and on the OLED status bar. Prevents deep-discharge damage in the field.
 - [x] **🔴S Blocking WiFi scan** — Manual refresh only via `/api/rescan`. No background task = no missed-probe reboots.
 - [x] **🔴S Command watchdog** — Auto-disarm on disconnect (400 ms timeout).
 - [x] **🔴S Boot-loop guard** — Safe mode after `WIFI_MAX_RESTART_ATTEMPTS`.
