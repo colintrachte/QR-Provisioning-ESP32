@@ -356,22 +356,13 @@ static esp_err_t handle_connecttest(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Probe: Windows NCSI %s", req->uri);
 
-    httpd_resp_set_status(req, "200 OK");
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
-    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    /* Serve the REAL setup page — the dummy <h1>Robot WiFi Setup</h1>
+     * is replaced by the live network list and form. */
     httpd_resp_set_hdr(req, "Connection", "close");
-
-    /* Minimal valid HTML — zero file I/O, zero malloc, zero LittleFS latency */
-    const char *html =
-        "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
-        "<title>Robot Setup</title></head><body>"
-        "<h1>Robot WiFi Setup</h1>"
-        "</body></html>";
-
-    httpd_resp_sendstr(req, html);
+    esp_err_t err = serve_embedded(req, "text/html",
+                          setup_html_gz_start, setup_html_gz_end, true, false);
     httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    return ESP_OK;
+    return err;
 }
 
 /* ── Android/Google probe ────────────────────────────────────────────────
@@ -385,20 +376,14 @@ static esp_err_t handle_generate_204(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Probe: Android %s", req->uri);
 
-    /* Return 302 redirect — CaptivePortalLogin follows this automatically */
-    char url[64];
-    snprintf(url, sizeof(url), "http://" AP_GW_IP "/");
-
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", url);
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
-    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    /* Return 200 + real setup page. 302 redirects are silently dropped by
+     * many OEM captive-portal implementations; 200 with content forces
+     * the "Sign in to network" sheet to open. */
     httpd_resp_set_hdr(req, "Connection", "close");
-
-    /* Minimal body — some Android versions check content-length */
-    httpd_resp_sendstr(req, "<html><body>Redirecting...</body></html>");
+    esp_err_t err = serve_embedded(req, "text/html",
+                          setup_html_gz_start, setup_html_gz_end, true, false);
     httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    return ESP_OK;
+    return err;
 }
 
 /* ── Generic catch-all (iOS, Firefox, Chrome, unknown) ─────────────────── */
@@ -406,29 +391,14 @@ static esp_err_t handle_generic(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Probe: Generic %s", req->uri);
 
-    char url[64];
-    snprintf(url, sizeof(url), "http://" AP_GW_IP "/");
-
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_set_hdr(req, "Location", url);
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    /* Return 200 + real setup page. 302 redirects are silently dropped by
+     * many OEM captive-portal implementations; 200 with content forces
+     * the "Sign in to network" sheet to open. */
     httpd_resp_set_hdr(req, "Connection", "close");
-
-    /* Non-empty body required — empty body causes iOS/Android to ignore */
-    const char *body =
-        "<!DOCTYPE html><html><head>"
-        "<meta http-equiv=\"refresh\" content=\"0;url=%s\">"
-        "<title>Redirecting</title></head><body>"
-        "<p>Redirecting to <a href=\"%s\">captive portal</a>...</p>"
-        "<script>window.location.replace('%s');</script>"
-        "</body></html>";
-
-    char html[512];
-    snprintf(html, sizeof(html), body, url, url, url);
-    httpd_resp_sendstr(req, html);
-
+    esp_err_t err = serve_embedded(req, "text/html",
+                          setup_html_gz_start, setup_html_gz_end, true, false);
     httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    return ESP_OK;
+    return err;
 }
 
 /* GET /api/status */
