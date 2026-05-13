@@ -51,6 +51,14 @@ extern const uint8_t base_css_gz_start[]    asm("_binary_base_css_gz_start");
 extern const uint8_t base_css_gz_end[]      asm("_binary_base_css_gz_end");
 extern const uint8_t favicon_svg_gz_start[] asm("_binary_favicon_svg_gz_start");
 extern const uint8_t favicon_svg_gz_end[]   asm("_binary_favicon_svg_gz_end");
+/* Control page assets — made available during provisioning so the
+ * "Skip setup" link works while the SoftAP portal is still up. */
+extern const uint8_t index_html_gz_start[]  asm("_binary_index_html_gz_start");
+extern const uint8_t index_html_gz_end[]    asm("_binary_index_html_gz_end");
+extern const uint8_t index_js_gz_start[]    asm("_binary_index_js_gz_start");
+extern const uint8_t index_js_gz_end[]      asm("_binary_index_js_gz_end");
+extern const uint8_t index_css_gz_start[]   asm("_binary_index_css_gz_start");
+extern const uint8_t index_css_gz_end[]     asm("_binary_index_css_gz_end");
 
 static esp_err_t serve_embedded(httpd_req_t *req, const char *mime,
                                 const uint8_t *start, const uint8_t *end,
@@ -347,46 +355,43 @@ static esp_err_t handle_setup_js(httpd_req_t *req)
                           setup_js_gz_start, setup_js_gz_end, true, true);
 }
 
-/* ── Windows NCSI probe ──────────────────────────────────────────────────
- * Windows expects 200 + "Microsoft Connect Test" for real internet.
- * For captive portal: return 302 redirect, BUT the response must be
- * valid enough that NCSI's "ActiveHttpProbeFailedHotspotDetected" fires.
- */
-static esp_err_t handle_connecttest(httpd_req_t *req)
+static esp_err_t handle_index_html(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Probe: Windows NCSI %s", req->uri);
-
-    /* Serve the REAL setup page — the dummy <h1>Robot WiFi Setup</h1>
-     * is replaced by the live network list and form. */
-    httpd_resp_set_hdr(req, "Connection", "close");
-    esp_err_t err = serve_embedded(req, "text/html",
-                          setup_html_gz_start, setup_html_gz_end, true, false);
-    httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    return err;
+    return serve_embedded(req, "text/html",
+                          index_html_gz_start, index_html_gz_end, true, false);
+}
+static esp_err_t handle_index_js(httpd_req_t *req)
+{
+    return serve_embedded(req, "application/javascript",
+                          index_js_gz_start, index_js_gz_end, true, true);
+}
+static esp_err_t handle_index_css(httpd_req_t *req)
+{
+    return serve_embedded(req, "text/css",
+                          index_css_gz_start, index_css_gz_end, true, true);
 }
 
-/* ── Android/Google probe ────────────────────────────────────────────────
- * Android expects 204 No Content for real internet.
- * For captive portal: ANY non-204 status triggers detection.
- * But Android 10+ requires the response to be "followable" —
- * a 302 with Location header should work, but some OEMs (Samsung)
- * need a 200 with portal HTML to auto-launch the captive portal app.
- */
-static esp_err_t handle_generate_204(httpd_req_t *req)
+/* ── Android-specific handler: 302 redirect ─────────────────────────────── */
+static esp_err_t handle_android_probe(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Probe: Android %s", req->uri);
 
-    /* Return 200 + real setup page. 302 redirects are silently dropped by
-     * many OEM captive-portal implementations; 200 with content forces
-     * the "Sign in to network" sheet to open. */
+    char url[64];
+    snprintf(url, sizeof(url), "http://" AP_GW_IP "/");
+
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", url);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Connection", "close");
-    esp_err_t err = serve_embedded(req, "text/html",
-                          setup_html_gz_start, setup_html_gz_end, true, false);
+
+    /* Non-empty body — some OEM builds ignore 302 with zero-length body */
+    httpd_resp_sendstr(req, "<html><body>Redirecting...</body></html>");
     httpd_sess_trigger_close(req->handle, httpd_req_to_sockfd(req));
-    return err;
+    return ESP_OK;
 }
 
-/* ── Generic catch-all (iOS, Firefox, Chrome, unknown) ─────────────────── */
+/* ── Generic redirect (iOS, Android, Windows, Firefox, Chrome, unknown) ─────────────────── */
 static esp_err_t handle_generic(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Probe: Generic %s", req->uri);
@@ -509,7 +514,10 @@ static void start_httpd(void)
         { .uri="/setup.js",    .method=HTTP_GET,  .handler=handle_setup_js  },
         { .uri="/favicon.svg", .method=HTTP_GET,  .handler=handle_favicon   },
         { .uri="/favicon.ico", .method=HTTP_GET,  .handler=handle_favicon   },
-
+        /* Robot control page (skip-setup fallback while in AP mode) */
+        { .uri="/index.html", .method=HTTP_GET, .handler=handle_index_html },
+        { .uri="/index.js",   .method=HTTP_GET, .handler=handle_index_js   },
+        { .uri="/index.css",  .method=HTTP_GET, .handler=handle_index_css  },
         /* WiFi API */
         { .uri="/api/status",  .method=HTTP_GET,  .handler=handle_api_status },
         { .uri="/api/scan",    .method=HTTP_GET,  .handler=handle_scan       },
@@ -518,13 +526,13 @@ static void start_httpd(void)
 
         /* === OS-SPECIFIC CAPTIVE PORTAL PROBES === */
         /* Android — MUST be before wildcard. Returns 200 (not 302) for /generate_204 */
-        { .uri="/generate_204",  .method=HTTP_GET,  .handler=handle_generate_204 },
-        { .uri="/generate204",   .method=HTTP_GET,  .handler=handle_generate_204 },
-        { .uri="/gen_204",       .method=HTTP_GET,  .handler=handle_generate_204 },
+        { .uri="/generate_204",  .method=HTTP_GET,  .handler=handle_android_probe },
+        { .uri="/generate204",   .method=HTTP_GET,  .handler=handle_android_probe },
+        { .uri="/gen_204",       .method=HTTP_GET,  .handler=handle_android_probe },
 
         /* Windows NCSI — MUST be before wildcard */
-        { .uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_connecttest },
-        { .uri="/ncsi.txt",        .method=HTTP_GET,  .handler=handle_connecttest },
+        { .uri="/connecttest.txt", .method=HTTP_GET,  .handler=handle_generic },
+        { .uri="/ncsi.txt",        .method=HTTP_GET,  .handler=handle_generic },
 
         /* iOS/macOS */
         { .uri="/hotspot-detect.html",       .method=HTTP_GET,  .handler=handle_generic },
@@ -537,7 +545,7 @@ static void start_httpd(void)
         /* Chrome/Chromium network time */
         { .uri="/browsernetworktime/*", .method=HTTP_GET, .handler=handle_generic },
         /* In your routes array, add /redirect */
-        { .uri="/redirect",        .method=HTTP_GET,  .handler=handle_connecttest },
+        { .uri="/redirect",        .method=HTTP_GET,  .handler=handle_generic },
 
         /* Wildcard catch-all — MUST BE LAST */
         { .uri="/*", .method=HTTP_GET,  .handler=handle_generic  },

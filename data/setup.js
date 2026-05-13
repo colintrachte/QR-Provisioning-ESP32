@@ -24,7 +24,6 @@ const elPass      = document.getElementById('password');
 const elForm      = document.getElementById('connect-form');
 const elStatus    = document.getElementById('status');
 const elToggle    = document.querySelector('.toggle-pass');
-const elSkip      = document.getElementById('skip-btn');
 
 /* ── Init ──────────────────────────────────────────────────────────────────*/
 async function init() {
@@ -45,25 +44,7 @@ async function init() {
      * captive portal, that hostname is the AP gateway (192.168.4.1), not the
      * robot's STA IP. Fetch /api/status to get the real IP.
      * If the device is not yet connected (no ip field), show a message. */
-    if (elSkip) {
-        elSkip.addEventListener('click', async e => {
-            e.preventDefault();
-            elSkip.textContent = 'Checking…';
-            try {
-                const res  = await fetch('/api/status');
-                const data = await res.json();
-                if (data.ip && data.ip !== '0.0.0.0') {
-                    window.location.href = 'http://' + data.ip + '/';
-                } else {
-                    elSkip.textContent = 'Not connected yet';
-                    setTimeout(() => { elSkip.textContent = 'Test robot now →'; }, 2000);
-                }
-            } catch {
-                elSkip.textContent = 'Not reachable';
-                setTimeout(() => { elSkip.textContent = 'Test robot now →'; }, 2000);
-            }
-        });
-    }
+    /* setup.js — replace the whole elSkip block */
 
     showSpinner(true);
     await loadNetworks();

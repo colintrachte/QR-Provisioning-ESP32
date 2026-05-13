@@ -5,132 +5,208 @@
 
 /* ── Body layout ────────────────────────────────────────────────────────────*/
 body {
-  display:         flex;
-  align-items:     center;
-  justify-content: center;
-  padding:         24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
 }
 
 /* ── Card (extends base .card — adds max-width and padding) ─────────────────*/
 .card {
-  max-width: 380px;
-  padding:   32px 28px;
+    max-width: 380px;
+    padding: 32px 28px;
 }
 
 /* ── Page header ────────────────────────────────────────────────────────────*/
-.logo     { font-size: 2rem; text-align: center; margin-bottom: 6px; }
-h1        { font-size: 1.1rem; font-weight: 700; text-align: center; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; }
-.subtitle { font-size: 0.78rem; color: var(--clr-muted); text-align: center; margin-bottom: 24px; }
+.logo {
+    font-size: 2rem;
+    text-align: center;
+    margin-bottom: 6px;
+}
+
+h1 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+}
+
+.subtitle {
+    font-size: 0.78rem;
+    color: var(--clr-text);
+    text-align: center;
+    margin-bottom: 24px;
+}
 
 /* ── Section label (extends base — adds bottom margin) ─────────────────────*/
-.section-label { margin-bottom: 8px; }
+.section-label {
+    margin-bottom: 8px;
+}
 
 /* ── Network list ───────────────────────────────────────────────────────────*/
 #network-list {
-  display:        flex;
-  flex-direction: column;
-  gap:            6px;
-  margin-bottom:  20px;
-  max-height:     220px;
-  overflow-y:     auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 20px;
+    max-height: 220px;
+    overflow-y: auto;
 }
 
 /* .network-btn and .network-meta — from base.css */
-.network-name { font-weight: 500; }
-.signal       { font-size: 0.8rem; color: var(--clr-muted); }
-.scan-status  { font-size: 0.78rem; color: var(--clr-muted); text-align: center; padding: 12px 0; }
+.network-name {
+    font-weight: 500;
+}
+
+.signal {
+    font-size: 0.8rem;
+    color: var(--clr-text);
+}
+
+.scan-status {
+    font-size: 0.78rem;
+    color: var(--clr-text);
+    text-align: center;
+    padding: 12px 0;
+}
 
 .rescan-btn {
-  background:    none;
-  border:        1px solid var(--clr-border);
-  border-radius: 6px;
-  color:         var(--clr-muted);
-  font-size:     0.72rem;
-  font-family:   inherit;
-  padding:       4px 10px;
-  cursor:        pointer;
-  margin-left:   8px;
-  transition:    border-color 0.15s, color 0.15s;
+    background: none;
+    border: 1px solid var(--clr-border);
+    border-radius: 6px;
+    color: var(--clr-text);
+    font-size: 0.72rem;
+    font-family: inherit;
+    padding: 4px 10px;
+    cursor: pointer;
+    margin-left: 8px;
+    transition: border-color 0.15s, color 0.15s;
 }
-.rescan-btn:hover { border-color: var(--clr-accent); color: var(--clr-text); }
+
+.rescan-btn:hover {
+    border-color: var(--clr-accent);
+    color: var(--clr-text);
+}
 
 /* ── Form ────────────────────────────────────────────────────────────────────*/
 /* setup.html uses bare <label> and element-typed <input> selectors,
    so these cannot be replaced by base.css classes. */
 label {
-  display:        block;
-  font-size:      0.72rem;
-  font-weight:    600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color:          var(--clr-muted);
-  margin-bottom:  6px;
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--clr-text);
+    margin-bottom: 6px;
 }
 
 input[type="text"],
 input[type="password"] {
-  width:         100%;
-  padding:       10px 12px;
-  background:    var(--clr-bg);
-  border:        1px solid var(--clr-border);
-  border-radius: var(--radius-sm);
-  color:         var(--clr-text);
-  font-size:     1rem;
-  font-family:   inherit;
-  outline:       none;
-  transition:    border-color 0.15s;
-  margin-bottom: 16px;
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--clr-bg);
+    border: 1px solid var(--clr-border);
+    border-radius: var(--radius-sm);
+    color: var(--clr-text);
+    font-size: 1rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+    margin-bottom: 16px;
 }
-input:focus { border-color: var(--clr-accent); }
+
+input:focus {
+    border-color: var(--clr-accent);
+}
 
 /* .pass-wrap and .toggle-pass — from base.css */
-.pass-wrap { margin-bottom: 24px; }
-.pass-wrap input { margin-bottom: 0; padding-right: 44px; }
+.pass-wrap {
+    margin-bottom: 24px;
+}
+
+.pass-wrap input {
+    margin-bottom: 0;
+    padding-right: 44px;
+}
 
 button[type="submit"] {
-  width:         100%;
-  padding:       12px;
-  background:    var(--clr-accent);
-  color:         #fff;
-  border:        none;
-  border-radius: var(--radius-sm);
-  font-size:     1rem;
-  font-weight:   600;
-  font-family:   inherit;
-  cursor:        pointer;
-  transition:    background 0.15s, opacity 0.15s;
+    width: 100%;
+    padding: 12px;
+    background: var(--clr-accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
 }
-button[type="submit"]:hover    { background: var(--clr-accent-hover); }
-button[type="submit"]:disabled { opacity: 0.5; cursor: default; }
+
+button[type="submit"]:hover {
+    background: var(--clr-accent-hover);
+}
+
+button[type="submit"]:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
 
 /* ── Status ──────────────────────────────────────────────────────────────────*/
 /* base .status covers the base rule; setup adds colour modifiers */
-.status        { margin-top: 14px; }
-.status.error  { color: var(--clr-danger); }
-.status.ok     { color: var(--clr-success); }
+.status {
+    margin-top: 14px;
+}
+
+.status.error {
+    color: var(--clr-danger);
+}
+
+.status.ok {
+    color: var(--clr-success);
+}
 
 /* ── Skip / direct access ────────────────────────────────────────────────────*/
 .skip-wrap {
-  display:         flex;
-  align-items:     center;
-  justify-content: center;
-  gap:             8px;
-  margin-top:      18px;
-  padding-top:     16px;
-  border-top:      1px solid var(--clr-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--clr-border);
 }
-.skip-label { font-size: 0.75rem; color: var(--clr-muted); }
-.skip-link  { font-size: 0.75rem; color: var(--clr-accent); text-decoration: none; font-weight: 600; }
-.skip-link:hover { text-decoration: underline; }
+
+.skip-label {
+    font-size: 0.75rem;
+    color: var(--clr-text);
+}
+
+.skip-link {
+    font-size: 0.75rem;
+    color: var(--clr-accent);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.skip-link:hover {
+    text-decoration: underline;
+}
 
 /* ── Hint ────────────────────────────────────────────────────────────────────*/
 .hint {
-  margin-top:  22px;
-  padding-top: 18px;
-  border-top:  1px solid var(--clr-border);
-  font-size:   0.72rem;
-  color:       var(--clr-muted);
-  text-align:  center;
-  line-height: 1.7;
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--clr-border);
+    font-size: 0.72rem;
+    color: var(--clr-text);
+    text-align: center;
+    line-height: 1.7;
 }
-.hint strong { color: var(--clr-text); }
+
+.hint strong {
+    color: var(--clr-text);
+}

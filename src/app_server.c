@@ -562,6 +562,7 @@ esp_err_t app_server_start(void)
 
     static const httpd_uri_t routes[] = {
         { .uri="/",              .method=HTTP_GET,  .handler=handle_index        },
+        { .uri="/index.html",    .method=HTTP_GET,  .handler=handle_index        },
         { .uri="/base.css",      .method=HTTP_GET,  .handler=handle_base_css     },
         { .uri="/index.css",     .method=HTTP_GET,  .handler=handle_index_css    },
         { .uri="/index.js",      .method=HTTP_GET,  .handler=handle_index_js     },
@@ -575,8 +576,7 @@ esp_err_t app_server_start(void)
         { .uri="/api/connect",   .method=HTTP_POST, .handler=handle_api_connect  },
         { .uri="/api/erase",     .method=HTTP_POST, .handler=handle_api_erase    },
         { .uri="/api/reboot",    .method=HTTP_POST, .handler=handle_api_reboot   },
-        { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,
-          .is_websocket=true                                                      },
+        { .uri="/ws",            .method=HTTP_GET,  .handler=ws_handler,.is_websocket=true},
         { .uri="/api/jserror",   .method=HTTP_POST, .handler=handle_api_jserror  },
 
         /* POST /api/settings is registered by settings_server_register() below */
