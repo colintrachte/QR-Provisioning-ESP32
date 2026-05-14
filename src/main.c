@@ -237,7 +237,7 @@ void app_main(void)
         enter_safe_mode("Too many failed starts");
         /* Does not return. */
     }
-
+    display_power(false);//save power during WiFi init; re-enable after reprovision check and safe mode
     /* 9. WiFi — AP credentials come from settings, not config.h #defines.
      *    wifi_manager_start() calls nvs_flash_init() internally; it returns
      *    ESP_ERR_INVALID_STATE on the second call which the manager treats as
@@ -281,9 +281,13 @@ void app_main(void)
     } else {
         display_set_available(false);
     }
+    display_power(true);
     /* 11. Motor driver. */
     ctrl_drive_init();
-
+    /* Spawn app_task immediately — motors work on AP or STA */
+    xTaskCreatePinnedToCore(app_task, "app_task", 4096, NULL, 5, NULL, 1);
+    udp_ctrl_start();   /* also works on AP interface */
+    bool app_task_spawned = true;
     /* 12. Health monitor. */
     health_monitor_init();
 
@@ -294,7 +298,6 @@ void app_main(void)
 
     /* 14. Main loop — 10 Hz UI tick + health checks. */
     ESP_LOGI(TAG, "Entering main loop");
-    bool app_task_spawned = false;
 
     while (1) {
         prov_ui_tick();

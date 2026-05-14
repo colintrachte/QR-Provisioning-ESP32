@@ -58,6 +58,13 @@ typedef enum {
     MGR_AP_SHUTTING_DOWN,
 } mgr_ap_state_t;
 
+typedef enum {
+    STA_CONN_OK,
+    STA_CONN_WRONG_CREDS,   /* auth fail / reason 15 */
+    STA_CONN_RF_FAIL,       /* timeout / association fail — creds may be fine */
+} sta_conn_result_t;
+
+static uint8_t s_last_disconnect_reason = 0;
 static volatile mgr_ap_state_t s_ap_state = MGR_AP_IDLE;
 static wifi_manager_config_t  s_cfg;
 static EventGroupHandle_t     s_sta_evt_grp = NULL;
@@ -136,6 +143,7 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             s_connected = false;
             wifi_event_sta_disconnected_t *disc =
                 (wifi_event_sta_disconnected_t *)data;
+            s_last_disconnect_reason = disc->reason;
             ESP_LOGW(TAG, "STA disconnected reason=%d retry=%d/%d",
                         disc->reason, s_retry_count, s_cfg.sta_max_retries);
 
@@ -243,7 +251,7 @@ static void on_sta_connected(bool kill_ap)   // <-- add parameter
     fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
     fire_connected();
 
-    app_server_start();
+    //app_server_start();
 
     if (kill_ap) {
         esp_wifi_set_mode(WIFI_MODE_STA);
@@ -285,18 +293,30 @@ static void mgr_task(void *arg)
         s_ap_state = MGR_AP_SHUTTING_DOWN;//change what is displayed on the screen, but don't change wifi until connection succeeds
         portal_stop();
         portal_get_credentials(ssid, pass);
+        nvs_save(ssid, pass);   // <-- save immediately; user typed these intentionally
         fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
 
         vTaskDelay(pdMS_TO_TICKS(300));
         fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
 
-        if (sta_connect(ssid, pass)) {
-            nvs_save(ssid, pass);
+        sta_conn_result_t result = sta_connect(ssid, pass);
+        if (result == STA_CONN_OK) {
             on_sta_connected(true);
             vTaskDelete(NULL);
             return;
         }
 
+        if (result == STA_CONN_RF_FAIL) {
+            // Credentials probably fine — show error, retry STA, don't re-enter portal
+            ESP_LOGW(TAG, "RF failure — retrying STA connect");
+            fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
+            result = sta_connect(ssid, pass);
+            if (result == STA_CONN_OK) {
+                on_sta_connected(true);
+                vTaskDelete(NULL);
+                return;
+            }
+        }
         // STA failed — AP is still up and client is still connected.
         // Do NOT call reset_wifi_for_ap() here — just restart the portal.
         fire_state(WIFI_MANAGER_STATE_STA_FAILED);
@@ -355,7 +375,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
                                wifi_event_cb, NULL);
 
     ESP_ERROR_CHECK(esp_wifi_start());
-
+    app_server_start();
     s_sta_evt_grp = xEventGroupCreate();
     if (!s_sta_evt_grp) return ESP_ERR_NO_MEM;
 
