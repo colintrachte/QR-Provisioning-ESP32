@@ -398,7 +398,11 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx)
         render_qr_screen(QR_WIFI, "Join AP:",
                          AP_SSID, AP_PASSWORD[0] ? AP_PASSWORD : "(open)");
         break;
-
+    case WIFI_MANAGER_STATE_STA_RETRYING:
+        /* Keep whatever screen is up (usually the connecting splash)
+         * and overwrite the bottom bar with the retry message. */
+        render_status_bar("Weak signal — retrying...");
+        break;
     case WIFI_MANAGER_STATE_ERROR:
         s_ssid[0] = s_ip[0] = s_status_msg[0] = '\0';
         display_clear();

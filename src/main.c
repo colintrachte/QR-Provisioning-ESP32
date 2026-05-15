@@ -9,19 +9,30 @@
  *  4.  prov_ui_show_boot()     Render boot splash.
  *  5.  nvs_flash_init()        Must precede settings_load() and wifi_manager.
  *  6.  settings_load()         Load runtime tunables from NVS; apply defaults
- *                              if absent. All subsequent modules read from here.
+ *                              if absent.
  *  7.  prov_ui_init()          Pre-generate WiFi + URL QR codes (~50 ms).
  *  8.  reprovision check       Non-blocking GPIO poll over REPROV_HOLD_MS.
- *  9.  wifi_manager_start()    Try stored credentials; fall back to portal.
- *  10. i_sensors_init()        Re-init I2C post-WiFi; scan bus; map peripherals.
- *                              Calls display_reinit_i2c() internally.
- *  11. ctrl_drive_init()       Init motor driver hardware.
- *  12. health_monitor_init()   Cache peripheral map; baseline telemetry.
- *  13. app_server_start()      HTTP file server + WebSocket on port 80.
- *                              (Actually started by wifi_manager once STA connects)
- *  14. udp_ctrl_start()        UDP control socket on port 4210 (post-STA).
- *  15. Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
- *                              Spawns app_task once STA is connected.
+ *  9.  ctrl_drive_init()       Init motor driver hardware.
+ *  9b. TCP/IP stack init       esp_netif_init + event loop — must precede
+ *                              app_server_start (httpd_start calls socket()).
+ * 10.  app_server_start()      Start HTTP server on port 80. Always-on;
+ *                              serves control page immediately. wifi_manager
+ *                              will call enter/exit_provisioning_mode() as
+ *                              needed — no second httpd_start() ever happens.
+ * 11.  app_task spawn          Motor tick + telemetry push, Core 1.
+ *                              Spawned here so it works on AP or STA.
+ * 12.  udp_ctrl_start()        UDP control socket, port 4210, Core 1.
+ * 13.  display_power(false)    Blank OLED during WiFi association to reduce
+ *                              rail load and improve RSSI on initial connect.
+ * 14.  wifi_manager_start()    Try stored credentials; fall back to portal.
+ *                              wifi_manager calls app_server_enter/exit_
+ *                              provisioning_mode() rather than starting its
+ *                              own httpd.
+ * 15.  i_sensors_init()        Re-init I2C post-WiFi; scan bus.
+ * 16.  display_reinit_i2c()    Re-attach OLED HAL to fresh bus.
+ * 17.  display_power(true)     Restore display.
+ * 18.  health_monitor_init()
+ * 19.  Main loop               prov_ui_tick(), health_monitor_tick(), 10 Hz.
  *
  * Boot-loop guard
  * ───────────────
@@ -49,6 +60,8 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_event.h"
+#include "esp_netif.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -75,7 +88,7 @@ static bool reprovision_requested(void)
     if (gpio_get_level(REPROV_GPIO) != 0) return false;
 
     ESP_LOGI(TAG, "BOOT held — polling for %d ms", REPROV_HOLD_MS);
-    o_led_blink(LED_PATTERN_FAST_BLINK);  /* visual feedback during hold */
+    o_led_blink(LED_PATTERN_FAST_BLINK);
 
     const int poll_ms = 50;
     for (int i = 0; i < REPROV_HOLD_MS / poll_ms; i++) {
@@ -88,7 +101,7 @@ static bool reprovision_requested(void)
     }
 
     ESP_LOGW(TAG, "Re-provision confirmed");
-    o_led_set(1.0f);   /* solid on while erasing */
+    o_led_set(1.0f);
     return true;
 }
 
@@ -110,13 +123,12 @@ static void enter_safe_mode(const char *reason)
     display_draw_hline(0, 44, DISP_WIDTH);
     display_draw_text( 2, 47, "Power cycle",       DISP_FONT_SMALL);
 
-    /* Show reset reason on the last line instead of generic "to recover" */
     char rst_str[20];
     snprintf(rst_str, sizeof(rst_str), "Rst:%s",
              rst == ESP_RST_PANIC    ? "PANIC" :
-             rst == ESP_RST_INT_WDT  ? "IWD" :
-             rst == ESP_RST_TASK_WDT ? "TWD" :
-             rst == ESP_RST_WDT      ? "WD" : "OTHER");
+             rst == ESP_RST_INT_WDT  ? "IWD"   :
+             rst == ESP_RST_TASK_WDT ? "TWD"   :
+             rst == ESP_RST_WDT      ? "WD"    : "OTHER");
     display_draw_text( 2, 55, rst_str, DISP_FONT_SMALL);
 
     display_flush();
@@ -124,7 +136,9 @@ static void enter_safe_mode(const char *reason)
 }
 
 /* ── Application task ───────────────────────────────────────────────────────
- * Spawned once STA is connected. Keeps robot logic off the UI tick.
+ * Spawned at boot (step 11) on Core 1 so motor control works regardless
+ * of whether STA is connected.  Telemetry pushes are no-ops when no WS
+ * clients are connected.
  */
 static void app_task(void *arg)
 {
@@ -137,14 +151,13 @@ static void app_task(void *arg)
         ctrl_drive_tick();
         i_sensors_tick();
 
-        /* Push telemetry at the configured interval (default 200 ms / 5 Hz). */
         uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         if (now_ms - last_telemetry_ms >= settings_get()->telemetry_interval_ms) {
             last_telemetry_ms = now_ms;
             app_server_push_telemetry();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));   /* 100 Hz tick; motor ramp uses this */
+        vTaskDelay(pdMS_TO_TICKS(10));   /* 100 Hz tick */
     }
 }
 
@@ -163,33 +176,31 @@ void app_main(void)
     ESP_LOGI(TAG, "Restart count: %d", s_restart_count);
     esp_reset_reason_t rst = esp_reset_reason();
     ESP_LOGI(TAG, "Reset reason: %d (%s)", (int)rst,
-             rst == ESP_RST_POWERON   ? "POWERON" :
-             rst == ESP_RST_SW        ? "SW" :
-             rst == ESP_RST_PANIC     ? "PANIC" :
-             rst == ESP_RST_INT_WDT   ? "INT_WDT" :
-             rst == ESP_RST_TASK_WDT  ? "TASK_WDT" :
-             rst == ESP_RST_WDT       ? "WDT" :
-             rst == ESP_RST_DEEPSLEEP ? "DEEPSLEEP" :
-             rst == ESP_RST_BROWNOUT  ? "BROWNOUT" :
-             rst == ESP_RST_USB       ? "USB" :
-             rst == ESP_RST_JTAG      ? "JTAG" : "UNKNOWN");
-    /* 1. Display: must be first so every subsequent step can show status. */
+             rst == ESP_RST_POWERON   ? "POWERON"   :
+             rst == ESP_RST_SW        ? "SW"        :
+             rst == ESP_RST_PANIC     ? "PANIC"     :
+             rst == ESP_RST_INT_WDT   ? "INT_WDT"   :
+             rst == ESP_RST_TASK_WDT  ? "TASK_WDT"  :
+             rst == ESP_RST_WDT       ? "WDT"       :
+             rst == ESP_RST_DEEPSLEEP ? "DEEPSLEEP"  :
+             rst == ESP_RST_BROWNOUT  ? "BROWNOUT"  :
+             rst == ESP_RST_USB       ? "USB"       :
+             rst == ESP_RST_JTAG      ? "JTAG"      : "UNKNOWN");
+
+    /* 1. Display first — every subsequent step can show status. */
     display_init();
 
-    /* 2. LED: second so reprovision check and safe mode can blink patterns. */
+    /* 2. LED — reprovision check and safe mode need blink patterns. */
     o_led_init();
-    o_led_blink(LED_PATTERN_SLOW_BLINK);  /* "booting" indicator */
+    o_led_blink(LED_PATTERN_SLOW_BLINK);
 
-    /* 3. Battery ADC: safe before WiFi; ADC1 is unaffected by radio init. */
+    /* 3. Battery ADC — safe before WiFi. */
     i_battery_init();
 
-    /* 4. UI splash — shown immediately so the user sees activity. */
+    /* 4. UI splash. */
     prov_ui_show_boot();
 
-    /* 5. NVS: must be initialised before settings_load() and before
-     *    wifi_manager_start() (which also calls nvs_flash_init internally;
-     *    the second call returns ESP_ERR_INVALID_STATE which wifi_manager
-     *    already handles as a no-op). */
+    /* 5. NVS. */
     {
         esp_err_t nvs_err = nvs_flash_init();
         if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -202,10 +213,7 @@ void app_main(void)
             ESP_LOGE(TAG, "nvs_flash_init: %s", esp_err_to_name(nvs_err));
     }
 
-    /* 6. Settings: load runtime tunables from NVS. All modules below read
-     *    from settings_get() rather than config.h #defines for their
-     *    tuneable parameters. Falls back to compiled-in defaults on first
-     *    boot or after a factory reset — never blocks startup. */
+    /* 6. Settings. */
     {
         esp_err_t sload = settings_load();
         if (sload == ESP_ERR_NVS_NOT_FOUND)
@@ -215,7 +223,7 @@ void app_main(void)
                      esp_err_to_name(sload));
     }
 
-    /* 7. QR pre-generation: uses AP creds from settings. */
+    /* 7. QR pre-generation. */
     prov_ui_init(settings_get()->ap_ssid, settings_get()->ap_password);
 
     /* 8. Re-provision check. */
@@ -237,11 +245,54 @@ void app_main(void)
         enter_safe_mode("Too many failed starts");
         /* Does not return. */
     }
-    display_power(false);//save power during WiFi init; re-enable after reprovision check and safe mode
-    /* 9. WiFi — AP credentials come from settings, not config.h #defines.
-     *    wifi_manager_start() calls nvs_flash_init() internally; it returns
-     *    ESP_ERR_INVALID_STATE on the second call which the manager treats as
-     *    a no-op, so the double-init is harmless. */
+
+    /* 9. Motor driver — hardware init only, no WiFi dependency. */
+    ctrl_drive_init();
+
+    /* 9b. TCP/IP stack — must be up before httpd_start() (called inside
+     *     app_server_start).  wifi_manager_start() also calls these but
+     *     it now runs after app_server_start(); initialising here first
+     *     is safe because both functions guard against double-init via
+     *     the ESP_ERR_INVALID_STATE return value. */
+    {
+        esp_err_t ni_err = esp_netif_init();
+        if (ni_err != ESP_OK && ni_err != ESP_ERR_INVALID_STATE)
+            ESP_LOGE(TAG, "esp_netif_init: %s", esp_err_to_name(ni_err));
+
+        esp_err_t el_err = esp_event_loop_create_default();
+        if (el_err != ESP_OK && el_err != ESP_ERR_INVALID_STATE)
+            ESP_LOGE(TAG, "esp_event_loop_create_default: %s", esp_err_to_name(el_err));
+    }
+
+    /* 10. HTTP server on port 80 — always-on, works on AP and STA.
+     *     wifi_manager will call enter/exit_provisioning_mode() as needed. */
+    {
+        esp_err_t srv_err = app_server_start();
+        if (srv_err != ESP_OK) {
+            ESP_LOGE(TAG, "app_server_start failed: %s — continuing",
+                     esp_err_to_name(srv_err));
+            /* Non-fatal: robot still works; log and proceed. */
+        }
+    }
+
+    /* 11. app_task — motor tick + telemetry, Core 1.
+     *     Spawned now so control page works immediately over the AP,
+     *     before STA connects.  telemetry push is a no-op until a WS
+     *     client connects so no waste when unconnected. */
+    xTaskCreatePinnedToCore(app_task, "app_task", 4096, NULL, 5, NULL, 1);
+
+    /* 12. UDP control socket — binds INADDR_ANY, works on AP or STA. */
+    udp_ctrl_start();
+
+    /* 13. Blank OLED during WiFi association to reduce I2C/display current
+     *     draw on the shared power rail, improving radio sensitivity.
+     *     The display stays powered; only the pixel driver is put to sleep. */
+    display_power(false);
+    o_led_blink(LED_PATTERN_FAST_BLINK);
+
+    /* 14. WiFi — spawns mgr_task, returns immediately.
+     *     mgr_task calls portal_start() → app_server_enter_provisioning_mode()
+     *     if stored credentials are absent or fail. */
     wifi_manager_config_t cfg = WIFI_MANAGER_CONFIG_DEFAULT();
     cfg.ap_ssid         = settings_get()->ap_ssid;
     cfg.ap_password     = settings_get()->ap_password;
@@ -250,15 +301,15 @@ void app_main(void)
     cfg.on_connected    = prov_ui_on_connected;
     cfg.on_radio_reset  = on_radio_reset;
 
-    o_led_blink(LED_PATTERN_FAST_BLINK);  /* "connecting" indicator */
-
     esp_err_t err = wifi_manager_start(&cfg);
     if (err != ESP_OK) {
         s_restart_count++;
         ESP_LOGE(TAG, "wifi_manager_start failed (%d/%d): %s",
-                 s_restart_count, WIFI_MAX_RESTART_ATTEMPTS, esp_err_to_name(err));
+                 s_restart_count, WIFI_MAX_RESTART_ATTEMPTS,
+                 esp_err_to_name(err));
 
         o_led_blink(LED_PATTERN_DOUBLE_BLINK);
+        display_power(true);
         display_clear();
         display_draw_text(4, 16, "WiFi init failed!",  DISP_FONT_NORMAL);
         display_draw_text(4, 28, esp_err_to_name(err), DISP_FONT_SMALL);
@@ -270,54 +321,30 @@ void app_main(void)
 
     s_restart_count = 0;
 
-    /* 10. I2C re-init after WiFi. No delay needed — re-init is explicit.
-     *     i_sensors_init() calls display_reinit_i2c() before scanning. */
+    /* 15. I2C re-init after WiFi radio bringup resets the peripheral. */
     i_sensors_init();
     i2c_master_bus_handle_t bus = i_sensors_get_bus();
     if (bus) {
-        esp_err_t err = display_reinit_i2c(bus);
-        /* reinit_i2c now sets s_available internally based on success/fail */
-        display_set_available(err == ESP_OK);
+        esp_err_t reinit_err = display_reinit_i2c(bus);
+        display_set_available(reinit_err == ESP_OK);
     } else {
         display_set_available(false);
     }
+
+    /* 16. Restore display now that the WiFi association window is over. */
     display_power(true);
-    /* 11. Motor driver. */
-    ctrl_drive_init();
-    /* Spawn app_task immediately — motors work on AP or STA */
-    xTaskCreatePinnedToCore(app_task, "app_task", 4096, NULL, 5, NULL, 1);
-    udp_ctrl_start();   /* also works on AP interface */
-    bool app_task_spawned = true;
-    /* 12. Health monitor. */
+
+    /* 17. Health monitor — needs peripheral map from i_sensors. */
     health_monitor_init();
 
-    /* 13. App server is started by wifi_manager once STA connects;
-     *     see mgr_task in wifi_manager.c. */
+    o_led_blink(LED_PATTERN_HEARTBEAT);
 
-    o_led_blink(LED_PATTERN_HEARTBEAT);  /* "running" indicator */
-
-    /* 14. Main loop — 10 Hz UI tick + health checks. */
+    /* 18. Main loop — 10 Hz UI tick + health monitor. */
     ESP_LOGI(TAG, "Entering main loop");
 
     while (1) {
         prov_ui_tick();
         health_monitor_tick();
-
-        if (wifi_manager_is_connected() && !app_task_spawned) {
-            ESP_LOGI(TAG, "STA connected — spawning app_task");
-            /* Pin app_task to Core 1 (APP_CPU) so motor command
-             * processing on the httpd task (Core 0 / PRO_CPU) is
-             * never preempted by telemetry or sensor work. */
-            xTaskCreatePinnedToCore(app_task, "app_task", 4096,
-                                    NULL, 5, NULL, 1);
-            /* UDP control socket also runs on Core 1. udp_ctrl_start()
-             * is safe to call after STA is up — it binds INADDR_ANY so
-             * it works on any interface. app_server_start() is called by
-             * wifi_manager's mgr_task just before this branch is reached. */
-            udp_ctrl_start();
-            app_task_spawned = true;
-        }
-
         vTaskDelay(pdMS_TO_TICKS(MAIN_LOOP_MS));
     }
 }

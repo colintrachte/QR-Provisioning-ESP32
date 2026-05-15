@@ -50,6 +50,7 @@ typedef enum {
     WIFI_MANAGER_STATE_STA_CONNECTING,    /* Connecting to target network    */
     WIFI_MANAGER_STATE_STA_CONNECTED,     /* Connected — provisioning done  */
     WIFI_MANAGER_STATE_STA_FAILED,        /* Connection failed, retrying    */
+    WIFI_MANAGER_STATE_STA_RETRYING,
     WIFI_MANAGER_STATE_ERROR,             /* Unrecoverable error            */
 } wifi_manager_state_t;
 

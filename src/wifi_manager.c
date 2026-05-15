@@ -7,19 +7,29 @@
  *
  *   mgr_task:
  *     [NVS creds found] → fire CONNECTING_SAVED → attempt STA connect
- *                       → wait up to 10 s for EVT_STA_CONNECTED
- *                       → on success: fire STA_CONNECTED callback, done.
+ *                       → on success: fire STA_CONNECTED, exit prov mode.
  *                       → on failure: fall through to portal.
  *
- *     [no creds / STA failed] → tear down STA → configure SoftAP → fire AP_STARTED
- *                              → portal_start() [blocks until POST /api/connect]
- *                              → portal_stop()
- *                              → save credentials to NVS
+ *     [no creds / STA failed] → configure SoftAP → fire AP_STARTED
+ *                              → app_server_enter_provisioning_mode() via portal_start()
+ *                              → portal_start() blocks until POST /api/connect
+ *                              → credentials already saved to NVS by /api/connect handler
+ *                              → portal_stop() → app_server_exit_provisioning_mode()
  *                              → fire CREDS_RECEIVED, STA_CONNECTING
  *                              → attempt STA connect
- *                              → wait for EVT_STA_CONNECTED
- *                              → on success: fire STA_CONNECTED callback.
+ *                              → on success: fire STA_CONNECTED.
  *                              → on failure: fire STA_FAILED, restart portal.
+ *
+ * Key changes from previous version
+ * ──────────────────────────────────
+ *   - app_server_start() is NOT called here.  app_server owns port 80 from
+ *     boot (called in main.c after ctrl_drive_init).
+ *   - on_sta_connected() calls app_server_exit_provisioning_mode() so that
+ *     setup routes and DNS are torn down once STA is up.
+ *   - Credentials are saved to NVS inside /api/connect (app_server) before
+ *     the portal unblocks, so a transient RF failure never discards them.
+ *   - sta_connect() distinguishes auth failure from RF/timeout failure via
+ *     s_last_disconnect_reason, enabling a silent STA retry on RF issues.
  */
 
 #include "wifi_manager.h"
@@ -46,32 +56,41 @@
 
 static const char *TAG = "wifi_mgr";
 
-/* NVS_NS_WIFI, NVS_KEY_SSID, NVS_KEY_PASS — defined in nvs_keys.h */
-
 #define EVT_STA_CONNECTED BIT0
 #define EVT_STA_FAILED    BIT1
 
 #define STA_CONNECT_TIMEOUT_MS 10000
+
+/* Reason codes from the last WIFI_EVENT_STA_DISCONNECTED event.
+ * WIFI_REASON_AUTH_FAIL (201) and WIFI_REASON_NO_AP_FOUND (201/202) indicate
+ * wrong credentials; everything else is likely an RF / association issue. */
+#define REASON_AUTH_FAIL      15    /* 802.11 auth reject — bad password */
+#define REASON_ASSOC_FAIL     17    /* association refused */
+#define REASON_HANDSHAKE_FAIL 204   /* 4-way handshake timeout — bad password */
+
 typedef enum {
     MGR_AP_IDLE,
     MGR_AP_ACTIVE,
     MGR_AP_SHUTTING_DOWN,
 } mgr_ap_state_t;
 
+/* Return value for sta_connect() */
 typedef enum {
     STA_CONN_OK,
-    STA_CONN_WRONG_CREDS,   /* auth fail / reason 15 */
-    STA_CONN_RF_FAIL,       /* timeout / association fail — creds may be fine */
+    STA_CONN_WRONG_CREDS,   /* auth / handshake failure — re-enter portal */
+    STA_CONN_RF_FAIL,       /* timeout / RF issue — creds are probably fine */
 } sta_conn_result_t;
 
-static uint8_t s_last_disconnect_reason = 0;
-static volatile mgr_ap_state_t s_ap_state = MGR_AP_IDLE;
-static wifi_manager_config_t  s_cfg;
-static EventGroupHandle_t     s_sta_evt_grp = NULL;
-static bool                   s_connected   = false;
-static char                   s_ip[16]      = {0};
-static char                   s_sta_ssid[33] = {0};
-static volatile int           s_retry_count  = 0;
+static volatile mgr_ap_state_t s_ap_state      = MGR_AP_IDLE;
+static wifi_manager_config_t   s_cfg;
+static EventGroupHandle_t      s_sta_evt_grp   = NULL;
+static bool                    s_connected     = false;
+static char                    s_ip[16]        = {0};
+static char                    s_sta_ssid[33]  = {0};
+static volatile int            s_retry_count   = 0;
+static volatile uint8_t        s_last_disc_reason = 0;
+
+/* ── NVS helpers ────────────────────────────────────────────────────────── */
 
 static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
@@ -87,39 +106,7 @@ static bool nvs_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
     return ok;
 }
 
-static void nvs_save(const char *ssid, const char *pass)
-{
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NS_WIFI, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed (%s) — credentials not saved",
-                 esp_err_to_name(err));
-        return;
-    }
-
-    err = nvs_set_str(nvs, NVS_KEY_SSID, ssid);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str(ssid) failed: %s", esp_err_to_name(err));
-        nvs_close(nvs);
-        return;
-    }
-
-    err = nvs_set_str(nvs, NVS_KEY_PASS, pass);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str(pass) failed: %s", esp_err_to_name(err));
-        nvs_close(nvs);
-        return;
-    }
-
-    err = nvs_commit(nvs);
-    if (err != ESP_OK)
-        ESP_LOGE(TAG, "nvs_commit failed: %s — credentials may not persist",
-                 esp_err_to_name(err));
-    else
-        ESP_LOGI(TAG, "Credentials saved to NVS (SSID=%s)", ssid);
-
-    nvs_close(nvs);
-}
+/* ── State-change callbacks ─────────────────────────────────────────────── */
 
 static void fire_state(wifi_manager_state_t state)
 {
@@ -134,6 +121,8 @@ static void fire_connected(void)
         s_cfg.on_connected(s_sta_ssid, s_ip, s_cfg.cb_ctx);
 }
 
+/* ── WiFi event handler ─────────────────────────────────────────────────── */
+
 static void wifi_event_cb(void *arg, esp_event_base_t base,
                           int32_t id, void *data)
 {
@@ -143,9 +132,9 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             s_connected = false;
             wifi_event_sta_disconnected_t *disc =
                 (wifi_event_sta_disconnected_t *)data;
-            s_last_disconnect_reason = disc->reason;
+            s_last_disc_reason = disc->reason;
             ESP_LOGW(TAG, "STA disconnected reason=%d retry=%d/%d",
-                        disc->reason, s_retry_count, s_cfg.sta_max_retries);
+                     disc->reason, s_retry_count, s_cfg.sta_max_retries);
 
             if (s_retry_count < s_cfg.sta_max_retries) {
                 s_retry_count++;
@@ -160,9 +149,7 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
             fire_state(WIFI_MANAGER_STATE_CLIENT_CONNECTED);
             break;
         case WIFI_EVENT_AP_STADISCONNECTED:
-            if (s_ap_state == MGR_AP_SHUTTING_DOWN) {
-                break;  /* intentional shutdown — ignore */
-            }
+            if (s_ap_state == MGR_AP_SHUTTING_DOWN) break;
             ESP_LOGI(TAG, "AP: client left");
             fire_state(WIFI_MANAGER_STATE_CLIENT_DISCONNECTED);
             break;
@@ -175,6 +162,8 @@ static void wifi_event_cb(void *arg, esp_event_base_t base,
         xEventGroupSetBits(s_sta_evt_grp, EVT_STA_CONNECTED);
     }
 }
+
+/* ── AP configuration ───────────────────────────────────────────────────── */
 
 static void ap_configure(void)
 {
@@ -193,18 +182,18 @@ static void ap_configure(void)
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
 
-    // ADD THESE TWO LINES:
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
-
     s_ap_state = MGR_AP_ACTIVE;
-    ESP_LOGI(TAG, "SoftAP configured: SSID=%s ch=%d",
-             s_cfg.ap_ssid, ap_cfg.ap.channel);
+    ESP_LOGI(TAG, "SoftAP: SSID=%s ch=%d", s_cfg.ap_ssid, ap_cfg.ap.channel);
 }
 
-static bool sta_connect(const char *ssid, const char *pass)
+/* ── STA connect ────────────────────────────────────────────────────────── */
+
+static sta_conn_result_t sta_connect(const char *ssid, const char *pass)
 {
     xEventGroupClearBits(s_sta_evt_grp, EVT_STA_CONNECTED | EVT_STA_FAILED);
-    s_retry_count = 0;
+    s_retry_count      = 0;
+    s_last_disc_reason = 0;
 
     wifi_config_t sta_cfg = {0};
     strncpy((char *)sta_cfg.sta.ssid,     ssid,
@@ -225,12 +214,25 @@ static bool sta_connect(const char *ssid, const char *pass)
 
     if (bits & EVT_STA_CONNECTED) {
         strncpy(s_sta_ssid, ssid, sizeof(s_sta_ssid) - 1);
-        return true;
+        return STA_CONN_OK;
     }
 
     esp_wifi_disconnect();
-    return false;
+
+    /* Classify the failure so mgr_task can decide whether to show the portal */
+    uint8_t reason = s_last_disc_reason;
+    if (reason == REASON_AUTH_FAIL      ||
+        reason == REASON_ASSOC_FAIL     ||
+        reason == REASON_HANDSHAKE_FAIL) {
+        ESP_LOGW(TAG, "STA connect: auth/handshake failure (reason=%d)", reason);
+        return STA_CONN_WRONG_CREDS;
+    }
+
+    ESP_LOGW(TAG, "STA connect: RF/timeout failure (reason=%d) — creds kept", reason);
+    return STA_CONN_RF_FAIL;
 }
+
+/* ── Radio reset for AP→APSTA transition ────────────────────────────────── */
 
 static void reset_wifi_for_ap(void)
 {
@@ -246,17 +248,22 @@ static void reset_wifi_for_ap(void)
         s_cfg.on_radio_reset(s_cfg.cb_ctx);
 }
 
-static void on_sta_connected(bool kill_ap)   // <-- add parameter
+/* ── Post-connect actions ───────────────────────────────────────────────── */
+
+static void on_sta_connected(void)
 {
+    /* Tear down provisioning routes and DNS.  No-op if we never entered
+     * provisioning mode (fast path with stored credentials). */
+    app_server_exit_provisioning_mode();
+
     fire_state(WIFI_MANAGER_STATE_STA_CONNECTED);
     fire_connected();
 
-    //app_server_start();
-
-    if (kill_ap) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
-        ESP_LOGI(TAG, "AP stopped — STA-only mode");
-    }
+    /* Keep AP up intentionally — a client already on the SoftAP should
+     * not lose the control page just because STA connected.  The AP will
+     * be idle (no DNS hijack, no setup routes) but harmless.  Power cost
+     * is negligible on ESP32-S3 in APSTA mode with no AP clients. */
+    ESP_LOGI(TAG, "STA connected — remaining in APSTA mode for local control");
 
 #if MDNS_ENABLE
     if (mdns_init() == ESP_OK) {
@@ -267,65 +274,107 @@ static void on_sta_connected(bool kill_ap)   // <-- add parameter
 #endif
 }
 
+/* ── Manager task ───────────────────────────────────────────────────────── */
+
 static void mgr_task(void *arg)
 {
     (void)arg;
     char ssid[33] = {0};
     char pass[65] = {0};
 
+    /* ── Fast path: stored credentials ─────────────────────────────────── */
     if (nvs_load(ssid, sizeof(ssid), pass, sizeof(pass))) {
         fire_state(WIFI_MANAGER_STATE_CONNECTING_SAVED);
-        if (sta_connect(ssid, pass)) {
-            on_sta_connected(true);
-            vTaskDelete(NULL);
-            return;
-        }
-        ESP_LOGW(TAG, "Saved credentials failed — falling back to portal");
-    }
-
-    // Hard reset only once, before the portal loop starts
-    reset_wifi_for_ap();
-    ap_configure();
-    fire_state(WIFI_MANAGER_STATE_AP_STARTED);
-
-    while (1) {
-        portal_start(s_cfg.ap_ssid);
-        s_ap_state = MGR_AP_SHUTTING_DOWN;//change what is displayed on the screen, but don't change wifi until connection succeeds
-        portal_stop();
-        portal_get_credentials(ssid, pass);
-        nvs_save(ssid, pass);   // <-- save immediately; user typed these intentionally
-        fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
-
-        vTaskDelay(pdMS_TO_TICKS(300));
-        fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
-
         sta_conn_result_t result = sta_connect(ssid, pass);
+
         if (result == STA_CONN_OK) {
-            on_sta_connected(true);
+            on_sta_connected();
             vTaskDelete(NULL);
             return;
         }
 
         if (result == STA_CONN_RF_FAIL) {
-            // Credentials probably fine — show error, retry STA, don't re-enter portal
-            ESP_LOGW(TAG, "RF failure — retrying STA connect");
-            fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
+            /* Credentials are likely fine — silent retry before portal.
+             * RF conditions may improve within a few seconds. */
+            ESP_LOGW(TAG, "RF failure on saved creds — retrying in 3 s");
+            vTaskDelay(pdMS_TO_TICKS(3000));
             result = sta_connect(ssid, pass);
             if (result == STA_CONN_OK) {
-                on_sta_connected(true);
+                on_sta_connected();
                 vTaskDelete(NULL);
                 return;
             }
         }
-        // STA failed — AP is still up and client is still connected.
-        // Do NOT call reset_wifi_for_ap() here — just restart the portal.
+
+        ESP_LOGW(TAG, "Saved credentials failed (result=%d) — falling back to portal",
+                 (int)result);
+    }
+
+    /* ── Portal path ────────────────────────────────────────────────────── */
+    reset_wifi_for_ap();
+    ap_configure();
+    fire_state(WIFI_MANAGER_STATE_AP_STARTED);
+
+    bool have_creds = false;
+    uint32_t rf_retry_delay_ms = 5000;   /* starts at 5 s, caps at 30 s */
+
+    while (1) {
+        /* ── Credential acquisition ───────────────────────────────────── */
+        if (!have_creds) {
+            /* portal_start() calls app_server_enter_provisioning_mode()
+             * and blocks until /api/connect saves creds to NVS and fires
+             * the callback.  Credentials are in NVS before we unblock. */
+            portal_start(s_cfg.ap_ssid);
+
+            s_ap_state = MGR_AP_SHUTTING_DOWN;
+
+            /* portal_stop() calls app_server_exit_provisioning_mode():
+             * DNS stops, setup routes unregister, / is now the control page.
+             * The AP radio stays up — clients keep their connection. */
+            portal_stop();
+
+            portal_get_credentials(ssid, pass);
+            fire_state(WIFI_MANAGER_STATE_CREDS_RECEIVED);
+            have_creds = true;
+            rf_retry_delay_ms = 5000;   /* reset backoff for fresh creds */
+        }
+
+        /* ── STA connection attempt ───────────────────────────────────── */
+        vTaskDelay(pdMS_TO_TICKS(300));
+        fire_state(WIFI_MANAGER_STATE_STA_CONNECTING);
+
+        sta_conn_result_t result = sta_connect(ssid, pass);
+
+        if (result == STA_CONN_OK) {
+            on_sta_connected();   /* keeps AP alive, exits prov mode */
+            vTaskDelete(NULL);
+            return;
+        }
+
+        if (result == STA_CONN_RF_FAIL) {
+            /* Creds are already in NVS.  Keep AP up so the user can reach
+             * the control page at /index.html and drive the robot while
+             * we retry in the background with exponential backoff. */
+            fire_state(WIFI_MANAGER_STATE_STA_RETRYING);
+            ESP_LOGW(TAG, "RF fail — AP up, control page live at /index.html, "
+                          "retrying STA in %lu ms", (unsigned long)rf_retry_delay_ms);
+            vTaskDelay(pdMS_TO_TICKS(rf_retry_delay_ms));
+
+            /* Exponential backoff: 5 s → 10 s → 20 s → 30 s (cap) */
+            rf_retry_delay_ms = rf_retry_delay_ms * 2;
+            if (rf_retry_delay_ms > 30000) rf_retry_delay_ms = 30000;
+
+            continue;   /* retry STA — do NOT re-enter portal */
+        }
+
+        /* ── Auth failure: credentials are wrong, ask user again ─────── */
         fire_state(WIFI_MANAGER_STATE_STA_FAILED);
-        ESP_LOGW(TAG, "Bad credentials — restarting portal, AP stays up");
-        // Loop back to portal_start() — no radio reset needed
+        ESP_LOGW(TAG, "Auth failure — restarting portal for new credentials");
+        have_creds = false;   /* re-enter portal on next iteration */
     }
 }
 
-/* ── Public API ────────────────────────────────────────────────────────────*/
+/* ── Public API ─────────────────────────────────────────────────────────── */
 
 esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
 {
@@ -344,16 +393,24 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
         return err;
     }
 
-    esp_err_t ni_err = esp_netif_init();
-    if (ni_err != ESP_OK && ni_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_netif_init: %s", esp_err_to_name(ni_err));
-        return ni_err;
+    /* esp_netif_init(), esp_event_loop_create_default(), and
+     * esp_netif_create_default_wifi_{ap,sta}() are called in main.c before
+     * app_server_start() so the TCP/IP stack is up before httpd_start().
+     * Guard against double-init in case wifi_manager_start() is ever called
+     * standalone in a test harness. */
+    {
+        esp_err_t ni_err = esp_netif_init();
+        if (ni_err != ESP_OK && ni_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "esp_netif_init: %s", esp_err_to_name(ni_err));
+            return ni_err;
+        }
+        esp_err_t el_err = esp_event_loop_create_default();
+        if (el_err != ESP_OK && el_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "esp_event_loop_create_default: %s", esp_err_to_name(el_err));
+            return el_err;
+        }
     }
-    esp_err_t el_err = esp_event_loop_create_default();
-    if (el_err != ESP_OK && el_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "esp_event_loop_create_default: %s", esp_err_to_name(el_err));
-        return el_err;
-    }
+
     static bool s_netif_created = false;
     if (!s_netif_created) {
         esp_netif_create_default_wifi_ap();
@@ -375,7 +432,7 @@ esp_err_t wifi_manager_start(const wifi_manager_config_t *config)
                                wifi_event_cb, NULL);
 
     ESP_ERROR_CHECK(esp_wifi_start());
-    app_server_start();
+
     s_sta_evt_grp = xEventGroupCreate();
     if (!s_sta_evt_grp) return ESP_ERR_NO_MEM;
 
