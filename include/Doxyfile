@@ -1,0 +1,67 @@
+PROJECT_NAME           = "Robot Provisioning"
+PROJECT_NUMBER         = "1.0"
+PROJECT_BRIEF          = "ESP32-S3 WiFi provisioning & RC control firmware"
+
+DOXYFILE_ENCODING      = UTF-8
+INPUT_ENCODING         = UTF-8
+
+INPUT                  = src/ boards/ include/
+FILE_PATTERNS          = *.c *.h *.md
+RECURSIVE              = YES
+
+EXCLUDE_PATTERNS       = */test/* */tests/* */.pio/*
+
+OUTPUT_DIRECTORY       = docs/api
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_XML           = YES
+
+USE_MDFILE_AS_MAINPAGE = README.md
+
+OPTIMIZE_OUTPUT_FOR_C  = YES
+TYPEDEF_HIDES_STRUCT   = YES
+
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+SEARCH_INCLUDES        = YES
+
+PREDEFINED             += IRAM_ATTR=
+PREDEFINED             += DRAM_ATTR=
+PREDEFINED             += RTC_DATA_ATTR=
+PREDEFINED             += RTC_NOINIT_ATTR=
+PREDEFINED             += __attribute__(x)=
+
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+
+HAVE_DOT               = YES
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+DOT_GRAPH_MAX_NODES    = 80
+MAX_DOT_GRAPH_DEPTH    = 3
+
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_LOGFILE           = docs/doxygen-warnings.log
+
+SORT_MEMBER_DOCS       = YES
+SORT_BRIEF_DOCS        = YES
+SORT_BY_SCOPE_NAME     = YES
+
+STRIP_FROM_PATH        = src boards include
+STRIP_FROM_INC_PATH    = include
+
+HTML_EXTRA_STYLESHEET  = \
+    docs/theme/doxygen-awesome.css \
+    docs/theme/doxygen-awesome-sidebar-only-darkmode-toggle.css
+
+HTML_EXTRA_FILES       = \
+    docs/theme/doxygen-awesome-darkmode-toggle.js
+
+HTML_HEADER            = docs/theme/header.html
