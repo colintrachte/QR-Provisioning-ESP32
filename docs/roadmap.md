@@ -51,7 +51,6 @@ _These make the browser experience richer and more debuggable._
 - [x] **🔵S JS error reporting** — `window.onerror` → POST `/api/jserror` so frontend bugs appear in the serial log.
 - [x] **🔵S Latency display** — Show round-trip ping time in the control UI. Helps diagnose WiFi congestion.
 - [x] **🟢S Connection quality indicator** — WiFi signal bars + packet loss estimate in the UI header.
-- [ ] **🟢S Dark mode toggle** — Persist preference in `localStorage`. Match `prefers-color-scheme` on first load.
 - [x] **🔴M WebSocket control** — Joystick, keyboard, arming, telemetry push at 5 Hz.
 
 ---
@@ -60,7 +59,6 @@ _These make the browser experience richer and more debuggable._
 
 _These turn the robot from a LAN toy into an internet-aware device._
 
-- [ ] **🔵M Push notifications (ntfy.sh)** — Optional alerts to phone: "Battery low", "Motor stall", "WiFi disconnected". User configures topic in settings. No app build needed.
 - [ ] **🔵M Home Assistant / MQTT** — Publish telemetry to configurable broker. Accept command topics (`robot/cmd/stop`, `robot/cmd/led`). Auto-discover via HA MQTT integration.
 - [ ] **🔵S NTP time sync** — Sync RTC on boot and every 4 h. Enables timestamped logs, scheduled autonomous missions, accurate uptime reporting.
 - [x] **🔵M WebSocket vs UDP evaluation** — Prototype UDP control channel. Measure latency + jitter under load vs current WebSocket. Decide before committing to UDP for low-latency use cases.
