@@ -20,13 +20,13 @@
 #include <stdint.h>
 
 /**
- * Initialise the health monitor.
+ * @brief Initialise the health monitor.
  * Caches the i_sensors peripheral map for logging. No I2C operations.
  */
 void health_monitor_init(void);
 
 /**
- * Periodic tick. Call from the main loop at ~10 Hz.
+ * @brief Periodic tick. Call from the main loop at ~10 Hz.
  * Polls RSSI on HEALTH_SCAN_INTERVAL_MS cadence.
  * Rebuilds the telemetry JSON blob every tick (it is cheap).
  */
@@ -39,7 +39,7 @@ void list_storage_contents(void);
 int8_t health_monitor_get_rssi(void);
 
 /**
- * Return a pointer to the cached telemetry JSON string.
+ * @brief Return a pointer to the cached telemetry JSON string.
  * Updated each tick. Safe to read between ticks — no partial writes.
  * The string is null-terminated and fits in HEALTH_JSON_BUF_LEN bytes.
  */

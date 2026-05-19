@@ -59,7 +59,7 @@ typedef struct {
 } i_sensor_data_t;
 
 /**
- * Initialise the I2C master bus, scan all addresses, and build the peripheral map.
+ * @brief Initialise the I2C master bus, scan all addresses, and build the peripheral map.
  * Calls display_reinit_i2c() so the OLED HAL uses the re-created bus handles.
  *
  * MUST be called after wifi_manager_start() returns.
@@ -68,7 +68,7 @@ typedef struct {
 void i_sensors_init(void);
 
 /**
- * Periodic tick — call from app_task alongside ctrl_drive_tick().
+ * @brief Periodic tick — call from app_task alongside ctrl_drive_tick().
  * Polls registered sensor drivers on their configured intervals.
  * Does nothing if not yet initialised.
  */

@@ -25,7 +25,7 @@
 #define QR_BUF_LEN 3918
 
 /**
- * Encode a WiFi join URI as a QR code.
+ * @brief Encode a WiFi join URI as a QR code.
  *
  * @param ssid      SoftAP SSID (max 32 chars).
  * @param password  Password (8–63 chars for WPA2; NULL or "" = open network).
@@ -35,7 +35,7 @@
 bool qr_gen_wifi(const char *ssid, const char *password, uint8_t *out_buf);
 
 /**
- * Encode a URL as a QR code.
+ * @brief Encode a URL as a QR code.
  *
  * @param url      Null-terminated URL (e.g. "http://192.168.4.1").
  * @param out_buf  Caller-supplied buffer of at least QR_BUF_LEN bytes.
@@ -44,7 +44,7 @@ bool qr_gen_wifi(const char *ssid, const char *password, uint8_t *out_buf);
 bool qr_gen_url(const char *url, uint8_t *out_buf);
 
 /**
- * Calculate the pixel dimensions of a rendered QR code.
+ * @brief Calculate the pixel dimensions of a rendered QR code.
  *
  * Returns the width (== height) in pixels that display_draw_qr() will
  * occupy for the given scale, including the quiet zone.

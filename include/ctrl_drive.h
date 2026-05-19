@@ -23,7 +23,7 @@ void ctrl_drive_init(void);
 
 void ctrl_drive_feed_watchdog(void);
 /**
- * Set target joystick axes. Safe to call from the WebSocket handler task.
+ * @brief Set target joystick axes. Safe to call from the WebSocket handler task.
  * Axes are applied on the next ctrl_drive_tick().
  * @param x  Lateral axis: -1.0 = full left, +1.0 = full right.
  * @param y  Forward axis: -1.0 = full reverse, +1.0 = full forward.
@@ -31,7 +31,7 @@ void ctrl_drive_feed_watchdog(void);
 void ctrl_drive_set_axes(float x, float y);
 
 /**
- * Arm or disarm the drive system.
+ * @brief Arm or disarm the drive system.
  * While disarmed: motors are stopped and drive commands are ignored.
  * While armed: ctrl_drive_tick() advances the ramp toward the target axes.
  * @param armed  true to arm, false to disarm.

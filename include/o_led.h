@@ -28,20 +28,20 @@ typedef enum {
 } led_pattern_t;
 
 /**
- * Initialise LEDC peripheral and configure GPIO35.
+ * @brief Initialise LEDC peripheral and configure GPIO35.
  * Call once at boot before any other o_led_* function.
  * @return ESP_OK or an esp_err_t on LEDC configuration failure.
  */
 esp_err_t o_led_init(void);
 
 /**
- * Set LED brightness immediately. Cancels any active blink pattern.
+ * @brief Set LED brightness immediately. Cancels any active blink pattern.
  * @param brightness  0.0 = off, 1.0 = full brightness. Clamped to [0, 1].
  */
 void o_led_set(float brightness);
 
 /**
- * Start a non-blocking blink pattern. Replaces any pattern currently running.
+ * @brief Start a non-blocking blink pattern. Replaces any pattern currently running.
  * @param pattern  One of the LED_PATTERN_* values.
  */
 void o_led_blink(led_pattern_t pattern);

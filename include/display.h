@@ -49,21 +49,27 @@
 /* ── Lifecycle ──────────────────────────────────────────────────────────────*/
 
 /**
- * Power on OLED, run SSD1306 init sequence, clear screen.
+ * @brief Power on OLED, run SSD1306 init sequence, clear screen.
  * @return true  if the display initialised and appears to be responding.
  *         false if hardware communication failed (display absent/faulty).
  *         All draw calls are safe no-ops when this returns false.
  */
 bool display_init(void);
 
-/** Turn display on (true) or sleep (false). No-op if display unavailable. */
+/**
+ * @brief Turn display on (true) or sleep (false). No-op if display unavailable.
+ * @param on true to turn on, false to sleep
+ */
 void display_power(bool on);
 
-/** Set contrast 0–255. No-op if display unavailable. */
+/**
+ * @brief Set contrast 0–255. No-op if display unavailable.
+ * @param level Contrast level (0-255)
+ */
 void display_contrast(uint8_t level);
 
 /**
- * Set the draw colour used by subsequent draw calls.
+ * @brief Set the draw colour used by subsequent draw calls.
  * @param color  1 = white (lit pixels), 0 = black (dark pixels / erase).
  * Default: 1 (white).
  */
@@ -71,23 +77,22 @@ void display_set_color(uint8_t color);
 
 /* ── Availability ───────────────────────────────────────────────────────────*/
 
-/** Returns true if the OLED was detected and initialised successfully. */
+/** @brief Returns true if the OLED was detected and initialised successfully. */
 bool display_is_available(void);
 
 /**
- * Called by i_sensors_init() after its I2C bus scan.
- * Sets the definitive hardware-detected available flag.
- * If available=false, all subsequent draw calls become no-ops.
+ * @brief Called by i_sensors_init() after its I2C bus scan.
+ * @param available true if the OLED is available, false otherwise.
  */
 void display_set_available(bool available);
 
 /**
- * Re-synchronise the u8g2 HAL with a freshly created I2C master bus.
+ * @brief Re-synchronise the u8g2 HAL with a freshly created I2C master bus.
  *
  * Call after i_sensors_init() has called i2c_new_master_bus() post-WiFi.
  * Internally calls u8g2_esp32_hal_reinit_bus() to rebuild bus/device handles,
  * then re-sends the SSD1306 init sequence (GDDRAM contents preserved).
- *
+ * @param new_bus Fresh I2C master bus handle.
  * @return ESP_OK on success.
  *         ESP_ERR_INVALID_STATE if display_init() has not run yet.
  *         Propagated esp_err_t from u8g2_esp32_hal_reinit_bus() on failure.
@@ -97,9 +102,10 @@ esp_err_t display_reinit_i2c(i2c_master_bus_handle_t new_bus);
 /* ── Escape hatch ───────────────────────────────────────────────────────────*/
 
 /**
- * Return the raw u8g2 handle for calls not covered by the wrappers below.
- * Call display_mark_dirty() after drawing directly via this handle.
+ * @brief Get raw u8g2 handle for advanced drawing.
  * The mutex is NOT held while you use this handle — use with care.
+ * Call display_mark_dirty() after drawing directly via this handle.
+ * @return Pointer to u8g2_t (use with care — mutex not held).
  */
 u8g2_t *display_get_u8g2(void);
 

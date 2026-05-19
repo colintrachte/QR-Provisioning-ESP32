@@ -55,7 +55,7 @@ typedef enum
 } qr_slot_t;
 
 /**
- * Initialise the provisioning UI and pre-generate the WiFi and setup QR codes.
+ * @brief Initialise the provisioning UI and pre-generate the WiFi and setup QR codes.
  * CPU-intensive (~50 ms); call before wifi_manager_start() to avoid blocking
  * the provisioning startup sequence.
  * Must be called after display_init().
@@ -64,17 +64,18 @@ typedef enum
  *
  * @param ap_ssid     SoftAP SSID to encode in the WiFi-join QR code.
  * @param ap_password SoftAP password (NULL or "" for open networks).
+ * @pre display_init() has been called.
  */
 void prov_ui_init(const char *ap_ssid, const char *ap_password);
 
 /**
- * Render and flush the boot splash screen.
+ * @brief Render and flush the boot splash screen.
  * Call once immediately after display_init(), before prov_ui_init().
  */
 void prov_ui_show_boot(void);
 
 /**
- * WiFi manager state-change callback.
+ * @brief WiFi manager state-change callback.
  * Pass as wifi_manager_config_t::on_state_change.
  *
  * State → screen mapping:
@@ -91,7 +92,7 @@ void prov_ui_show_boot(void);
 void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx);
 
 /**
- * WiFi manager connected callback.
+ * @brief WiFi manager connected callback.
  * Pass as wifi_manager_config_t::on_connected.
  * Generates the index-page QR with the real IP and renders the connected screen.
  *
@@ -102,7 +103,7 @@ void prov_ui_on_state_change(wifi_manager_state_t state, void *ctx);
 void prov_ui_on_connected(const char *ssid, const char *ip, void *ctx);
 
 /**
- * Update the connected-screen view based on current WebSocket client count.
+ * @brief Update the connected-screen view based on current WebSocket client count.
  * Called by wifi_manager whenever a client connects or disconnects.
  * No-op if the STA IP is not yet known (not in connected state).
  *
@@ -111,7 +112,7 @@ void prov_ui_on_connected(const char *ssid, const char *ip, void *ctx);
 void prov_ui_set_client_count(int count);
 
 /**
- * Tick — call from your main loop for API forward-compatibility.
+ * @brief Tick — call from your main loop for API forward-compatibility.
  * Currently a no-op; all transitions are event-driven via on_state_change.
  * Reserved for future use (e.g. slow QR cycling, heartbeat-based detection).
  */

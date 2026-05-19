@@ -110,25 +110,19 @@ typedef void (*settings_change_cb_t)(const robot_settings_t *new_settings,
 /* ── Public API ─────────────────────────────────────────────────────────────*/
 
 /**
- * Load settings from NVS into the singleton.
+ * @brief Load settings from NVS into the singleton.
  *
- * Must be called once from app_main() after nvs_flash_init() and before
- * any other module that reads settings_get().
+ * Must be called once from app_main() after nvs_flash_init().
  *
- * If the NVS key is absent or corrupt the singleton is populated with
- * compile-time defaults (defined in settings_mgr.c) and ESP_ERR_NVS_NOT_FOUND
- * is returned — the caller should treat this as non-fatal.
- *
- * If the stored schema_version < SETTINGS_SCHEMA_VERSION the migrated struct
- * is saved back immediately so subsequent boots are clean.
- *
+ * @pre nvs_flash_init() has succeeded.
+ * @post settings_get() returns valid data.
  * @return ESP_OK on success, ESP_ERR_NVS_NOT_FOUND if defaults were used,
- *         or another esp_err_t on NVS/JSON failure.
+ *         or another esp_err_t on failure.
  */
 esp_err_t settings_load(void);
 
 /**
- * Write the current singleton to NVS (serialize → nvs_set_str → nvs_commit).
+ * @brief Write the current singleton to NVS (serialize → nvs_set_str → nvs_commit).
  * Fires registered change callbacks after a successful save.
  *
  * Thread-safe: serialisation is mutex-protected.
@@ -138,7 +132,7 @@ esp_err_t settings_load(void);
 esp_err_t settings_save(void);
 
 /**
- * Overwrite the singleton with src, then call settings_save().
+ * @brief Overwrite the singleton with src, then call settings_save().
  * Use from HTTP handlers: copy the validated new struct in, then save.
  *
  * @param src   Pointer to the new settings; must not be NULL.
@@ -147,34 +141,39 @@ esp_err_t settings_save(void);
 esp_err_t settings_update(const robot_settings_t *src);
 
 /**
- * Reset the singleton to compile-time defaults and save to NVS.
+ * @brief Reset the singleton to compile-time defaults and save to NVS.
  * Does NOT restart the device — callers may choose to reboot afterward.
  */
 esp_err_t settings_reset_to_defaults(void);
 
 /**
- * Read-only accessor. Returns a stable pointer valid for the lifetime of
+ * @brief Read-only accessor. Returns a stable pointer valid for the lifetime of
  * the firmware run. Do not cache the returned struct by value if you need
  * to observe future changes; instead re-call settings_get() or use a
  * change callback.
+ *@return Stable const pointer valid for the lifetime of the firmware.
  */
 const robot_settings_t *settings_get(void);
 
 /**
- * Register a callback invoked after every successful settings_save().
+ * @brief Register a callback invoked after every successful settings_save().
  * Only one callback slot is provided per call — call again to replace.
- * Pass NULL to clear.
+ * @param cb Callback (NULL to clear).
+ * @param ctx Opaque context passed to the callback.
  */
 void settings_register_change_cb(settings_change_cb_t cb, void *ctx);
 
 /**
- * Validate a candidate settings struct.
- * Returns ESP_OK if all fields are within acceptable ranges/lengths.
- * On failure, err_buf (if non-NULL) is filled with a human-readable reason.
+ * @brief Validate a candidate settings struct.
+ *
+ * @param s Settings to validate.
+ * @param err_buf Optional buffer for error message (can be NULL).
+ * @param err_buf_len Size of err_buf.
+ * @return ESP_OK if valid, or ESP_ERR_INVALID_ARG with message in err_buf.
  */
 esp_err_t settings_validate(const robot_settings_t *s,char *err_buf, size_t err_buf_len);
 /**
- * settings_get_copy — copy current settings under mutex into *dst.
+ * @brief Copy current settings under mutex into *dst.
  *
  * Use this instead of settings_get() when you need a consistent snapshot
  * of multiple fields (e.g. in an HTTP handler that runs for >1 tick while
@@ -183,5 +182,7 @@ esp_err_t settings_validate(const robot_settings_t *s,char *err_buf, size_t err_
  * Returns ESP_OK on success, ESP_ERR_INVALID_ARG if dst is NULL,
  * ESP_ERR_INVALID_STATE if settings_load() has not been called yet
  * (dst is filled with defaults in that case).
+ * @param dst Destination struct (must not be NULL).
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if dst is NULL.
  */
 esp_err_t settings_get_copy(robot_settings_t *dst);
