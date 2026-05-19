@@ -2,11 +2,13 @@
 
 ## Supported Boards
 
+This project is intended for dual core microcontrollers with WIFI and a pixel-based display like the SSD1306. Anything with tons of additional built-in peripherals, like the TTGO V1, will be prioritized for compatibility.
+
 | Board | MCU | Flash | Display | Status |
 |-------|-----|-------|---------|--------|
 | [Heltec WiFi LoRa 32 V3](https://heltec.org/project/wifi-lora-32-v3/) | ESP32-S3FN8 @ 240 MHz | 8 MB | SSD1306 128×64 I2C | Primary target |
 | [TTGO LoRa32 V1](https://github.com/LilyGO/TTGO-LORA32) | ESP32 @ 240 MHz | 4 MB | SSD1306 128×64 I2C | Supported |
-| [Wemos D1 Mini](https://www.wemos.cc/en/latest/d1/d1_mini.html) | ESP8266 @ 160 MHz | 4 MB | None (optional external) | Arduino framework |
+| [Wemos D1 Mini](https://www.wemos.cc/en/latest/d1/d1_mini.html) | ESP8266 @ 160 MHz | 4 MB | None (optional external) | Not Supported but would be cool |
 
 ## Heltec WiFi LoRa 32 V3 Pinout
 

@@ -74,6 +74,15 @@ RTC_DATA_ATTR static int s_restart_count = 0;
 
 /* ── Re-provision button ────────────────────────────────────────────────────*/
 
+/**
+ * @brief Poll the BOOT button (REPROV_GPIO) at startup to see if the user
+ *        requests re-provisioning.
+ *
+ * The button must be held for the full REPROV_HOLD_MS duration. LED blinks
+ * during polling.
+ *
+ * @return true if re-provisioning was requested, false otherwise.
+ */
 static bool reprovision_requested(void)
 {
     gpio_config_t io = {
@@ -106,7 +115,14 @@ static bool reprovision_requested(void)
 }
 
 /* ── Safe mode ──────────────────────────────────────────────────────────────*/
-
+/**
+ * @brief Enter safe mode after repeated WiFi failures.
+ *
+ * Displays diagnostic information on the OLED and halts forever.
+ * LED blinks a double pattern for visual indication.
+ *
+ * @param reason Human-readable string describing the failure reason.
+ */
 static void enter_safe_mode(const char *reason)
 {
     esp_reset_reason_t rst = esp_reset_reason();
@@ -140,6 +156,15 @@ static void enter_safe_mode(const char *reason)
  * of whether STA is connected.  Telemetry pushes are no-ops when no WS
  * clients are connected.
  */
+
+ /**
+ * @brief Main application task (runs on Core 1).
+ *
+ * Drives motor control, sensor sampling, and periodic telemetry push.
+ * Runs at 100 Hz.
+ *
+ * @param arg Unused (FreeRTOS task argument).
+ */
 static void app_task(void *arg)
 {
     (void)arg;
@@ -161,6 +186,13 @@ static void app_task(void *arg)
     }
 }
 
+/**
+ * @brief Callback invoked when the WiFi manager resets the radio.
+ *
+ * Re-initialises the I2C bus for sensors/display after mode changes.
+ *
+ * @param ctx Unused context pointer.
+ */
 static void on_radio_reset(void *ctx)
 {
     (void)ctx;
@@ -170,6 +202,12 @@ static void on_radio_reset(void *ctx)
 
 /* ── Entry point ────────────────────────────────────────────────────────────*/
 
+/**
+ * @brief ESP-IDF application entry point.
+ *
+ * Performs full system initialisation following the documented startup
+ * sequence. Never returns.
+ */
 void app_main(void)
 {
     ESP_LOGI(TAG, BOARD_NAME);

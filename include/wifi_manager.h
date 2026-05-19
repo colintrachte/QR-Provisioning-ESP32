@@ -58,6 +58,7 @@ typedef void (*wifi_manager_state_cb_t)(wifi_manager_state_t state, void *ctx);
 typedef void (*wifi_manager_connected_cb_t)(const char *ssid, const char *ip, void *ctx);
 
 /**
+* @brief Configuration for wifi_manager_start().
  * on_radio_reset: Called from mgr_task (WiFi manager task) after
  * esp_wifi_set_mode() during AP reset. Executes on the same task
  * as the WiFi state machine. Keep this handler fast — it blocks
@@ -66,14 +67,14 @@ typedef void (*wifi_manager_connected_cb_t)(const char *ssid, const char *ip, vo
  * long delays, waiting on other tasks).
  */
 typedef struct {
-    const char *ap_ssid;
-    const char *ap_password;
-    uint8_t     ap_channel;
-    int         sta_max_retries;
-    void       *cb_ctx;
-    void      (*on_state_change)(wifi_manager_state_t state, void *ctx);
-    void      (*on_connected)(const char *ssid, const char *ip, void *ctx);
-    void      (*on_radio_reset)(void *ctx);   // ← add here
+    const char *ap_ssid;          /**< SSID of the provisioning SoftAP (NULL = use default) */
+    const char *ap_password;      /**< Password of the provisioning SoftAP (NULL = open) */
+    uint8_t     ap_channel;       /**< Channel for SoftAP (1-13) */
+    int         sta_max_retries;  /**< Maximum STA connection retries before portal fallback */
+    void       *cb_ctx;           /**< Opaque context passed to all callbacks */
+    wifi_manager_state_cb_t on_state_change;   /**< Called on every state change (may be called from WiFi task) */
+    wifi_manager_connected_cb_t on_connected;  /**< Called once STA has IP (may be called from WiFi task) */
+    void (*on_radio_reset)(void *ctx);         /**< Called after esp_wifi_set_mode() during AP/STA reset */
 } wifi_manager_config_t;
 
 #define WIFI_MANAGER_CONFIG_DEFAULT() { \
@@ -88,23 +89,44 @@ typedef struct {
 }
 
 /**
- * Start the WiFi manager. Tries NVS credentials first; falls back to the
- * captive portal (portal.c) if none exist or connection fails.
- * Non-blocking: progress is reported through callbacks.
- * @return ESP_OK or an esp_err_t on hard failure (e.g. OOM, NVS fault).
+ * @brief Start the WiFi manager.
+ *
+ * Tries stored NVS credentials first. On failure or missing credentials
+ * falls back to SoftAP + captive portal (portal.c).
+ *
+ * Non-blocking after return. All further progress is reported via callbacks.
+ *
+ * @param config Must remain valid for the lifetime of the manager.
+ * @return ESP_OK on success, or ESP_ERR_NO_MEM / ESP_ERR_NVS_* on hard failure.
  */
 esp_err_t wifi_manager_start(const wifi_manager_config_t *config);
 
-/** Erase stored credentials and return to the portal. */
+/**
+ * @brief Erase stored credentials and immediately restart provisioning (AP mode).
+ *
+ * @return ESP_OK on success, or an esp_err_t on NVS failure.
+ */
 esp_err_t wifi_manager_reset(void);
 
-/** Erase stored credentials without triggering a portal restart. */
+/**
+ * @brief Erase stored credentials without triggering an immediate portal restart.
+ *
+ * Useful when the caller wants to control the transition.
+ *
+ * @return ESP_OK on success, or an esp_err_t on NVS failure.
+ */
 esp_err_t wifi_manager_erase_credentials(void);
 
-/** True if STA interface currently holds an IP address. */
+/**
+ * @brief Returns true if the STA interface currently holds a valid IP address.
+ */
 bool wifi_manager_is_connected(void);
 
-/** Current STA IP as dotted-decimal string, or NULL if not connected. */
+/**
+ * @brief Returns the current STA IP address as a dotted-decimal string.
+ *
+ * @return Pointer to static buffer (valid until next state change) or NULL if not connected.
+ */
 const char *wifi_manager_get_ip(void);
 
 #ifdef __cplusplus
