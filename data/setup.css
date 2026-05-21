@@ -1,75 +1,265 @@
 /* =============================================================================
- * setup.css — WiFi provisioning portal styles.
- * Requires base.css to be loaded first.
+ * setup.css — Wizard slide-deck styles.
+ * Requires base.css loaded first.
  * ============================================================================= */
 
-/* ── Body layout ────────────────────────────────────────────────────────────*/
+/* ── Body ────────────────────────────────────────────────────────────────────*/
 body {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 24px;
+    min-height: 100dvh;
+    padding: 0;
+    overflow: hidden;
+    /* prevent body scroll; wizard scrolls internally */
 }
 
-/* ── Card (extends base .card — adds max-width and padding) ─────────────────*/
-.card {
-    max-width: 380px;
-    padding: 32px 28px;
+/* ── Wizard shell ────────────────────────────────────────────────────────────*/
+.wizard {
+    width: 100%;
+    max-width: 440px;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
 }
 
-/* ── Page header ────────────────────────────────────────────────────────────*/
-.logo {
-    font-size: 2rem;
+/* ── Progress dots ───────────────────────────────────────────────────────────*/
+.wizard-dots {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    padding: 18px 0 10px;
+    flex-shrink: 0;
+}
+
+.wizard-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--clr-muted);
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+    flex-shrink: 0;
+}
+
+.wizard-dot.active {
+    background: var(--clr-accent);
+    transform: scale(1.35);
+}
+
+.wizard-dot.done {
+    background: var(--clr-success);
+}
+
+/* ── Slide track (horizontal scroll container) ───────────────────────────────*/
+.slide-track {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    /* clip; JS drives the transform */
+    position: relative;
+}
+
+/* ── Individual slide ────────────────────────────────────────────────────────*/
+.slide {
+    flex: 0 0 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 24px 24px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    transform: translateX(0);
+    /* overridden by JS via --offset */
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform;
+}
+
+/* ── Slide header ────────────────────────────────────────────────────────────*/
+.slide-header {
     text-align: center;
+    padding: 20px 0 16px;
+}
+
+.slide-icon {
+    font-size: 2.4rem;
+    line-height: 1;
+    margin-bottom: 10px;
+}
+
+.slide-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     margin-bottom: 6px;
 }
 
-h1 {
-    font-size: 1.1rem;
-    font-weight: 700;
-    text-align: center;
-    letter-spacing: 0.04em;
+.slide-sub {
+    font-size: 0.82rem;
+    color: var(--clr-muted);
+    line-height: 1.55;
+    max-width: 320px;
+    margin: 0 auto;
+}
+
+/* ── Slide body ──────────────────────────────────────────────────────────────*/
+.slide-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Slide footer (nav buttons) ──────────────────────────────────────────────*/
+.slide-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding-top: 20px;
+    margin-top: auto;
+}
+
+.finish-footer {
+    flex-direction: column;
+}
+
+.finish-btn {
+    width: 100%;
+    text-decoration: none;
+}
+
+/* ── Shared field styles (overrides base bare-element selectors) ─────────────*/
+.field-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.72rem;
+    font-weight: 600;
     text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--clr-muted);
+    margin-bottom: 6px;
+}
+
+.field-input {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--clr-bg);
+    border: 1px solid var(--clr-border);
+    border-radius: var(--radius-sm);
+    color: var(--clr-text);
+    font-size: 1rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
     margin-bottom: 4px;
 }
 
-.subtitle {
-    font-size: 0.78rem;
-    color: var(--clr-text);
-    text-align: center;
-    margin-bottom: 24px;
+.field-input:focus {
+    border-color: var(--clr-accent);
 }
 
-/* ── Section label (extends base — adds bottom margin) ─────────────────────*/
-.section-label {
+.field-hint {
+    font-size: 0.75rem;
+    color: var(--clr-muted);
+    line-height: 1.5;
+    margin-bottom: 4px;
+}
+
+.field-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────*/
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 20px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    font-family: inherit;
+    font-size: 0.88rem;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--clr-accent);
+    color: #fff;
+    border-color: var(--clr-accent);
+    width: 100%;
+}
+
+.btn-primary:hover {
+    background: var(--clr-accent-hover);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.btn-ghost {
+    background: none;
+    border: 1px solid var(--clr-border);
+    color: var(--clr-muted);
+}
+
+.btn-ghost:hover {
+    border-color: var(--clr-accent);
+    color: var(--clr-text);
+}
+
+.btn-next {
+    background: var(--clr-accent);
+    color: #fff;
+    border-color: var(--clr-accent);
+    flex-shrink: 0;
+}
+
+.btn-next:hover {
+    background: var(--clr-accent-hover);
+}
+
+/* ── Status line ─────────────────────────────────────────────────────────────*/
+.status {
+    font-size: 0.78rem;
+    color: var(--clr-muted);
+    min-height: 1.2em;
+    text-align: center;
+}
+
+.status.ok {
+    color: var(--clr-success);
+}
+
+.status.error {
+    color: var(--clr-danger);
+}
+
+/* ── WiFi slide ──────────────────────────────────────────────────────────────*/
+.net-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 8px;
 }
 
-/* ── Network list ───────────────────────────────────────────────────────────*/
-#network-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-bottom: 20px;
-    max-height: 220px;
-    overflow-y: auto;
-}
-
-/* .network-btn and .network-meta — from base.css */
-.network-name {
-    font-weight: 500;
-}
-
-.signal {
-    font-size: 0.8rem;
-    color: var(--clr-text);
-}
-
-.scan-status {
-    font-size: 0.78rem;
-    color: var(--clr-text);
-    text-align: center;
-    padding: 12px 0;
+.section-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--clr-muted);
 }
 
 .rescan-btn {
@@ -81,132 +271,489 @@ h1 {
     font-family: inherit;
     padding: 4px 10px;
     cursor: pointer;
-    margin-left: 8px;
-    transition: border-color 0.15s, color 0.15s;
+    transition: border-color 0.15s;
 }
 
 .rescan-btn:hover {
     border-color: var(--clr-accent);
-    color: var(--clr-text);
 }
 
-/* ── Form ────────────────────────────────────────────────────────────────────*/
-/* setup.html uses bare <label> and element-typed <input> selectors,
-   so these cannot be replaced by base.css classes. */
-label {
-    display: block;
-    font-size: 0.72rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--clr-text);
-    margin-bottom: 6px;
+.rescan-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
 }
 
-input[type="text"],
-input[type="password"] {
-    width: 100%;
-    padding: 10px 12px;
+.hidden {
+    display: none !important;
+}
+
+.scan-status {
+    font-size: 0.78rem;
+    color: var(--clr-muted);
+    text-align: center;
+    padding: 10px 0;
+}
+
+.net-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+}
+
+.network-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
     background: var(--clr-bg);
     border: 1px solid var(--clr-border);
     border-radius: var(--radius-sm);
     color: var(--clr-text);
-    font-size: 1rem;
-    font-family: inherit;
-    outline: none;
-    transition: border-color 0.15s;
-    margin-bottom: 16px;
-}
-
-input:focus {
-    border-color: var(--clr-accent);
-}
-
-/* .pass-wrap and .toggle-pass — from base.css */
-.pass-wrap {
-    margin-bottom: 24px;
-}
-
-.pass-wrap input {
-    margin-bottom: 0;
-    padding-right: 44px;
-}
-
-button[type="submit"] {
-    width: 100%;
-    padding: 12px;
-    background: var(--clr-accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 1rem;
-    font-weight: 600;
-    font-family: inherit;
+    font-size: 0.82rem;
     cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
+    text-align: left;
+    width: 100%;
+    transition: border-color 0.15s, background 0.15s;
 }
 
-button[type="submit"]:hover {
-    background: var(--clr-accent-hover);
+.network-btn:hover,
+.network-btn.selected {
+    border-color: var(--clr-accent);
+    background: rgba(59, 130, 246, 0.08);
 }
 
-button[type="submit"]:disabled {
-    opacity: 0.5;
-    cursor: default;
+.network-name {
+    font-weight: 500;
 }
 
-/* ── Status ──────────────────────────────────────────────────────────────────*/
-/* base .status covers the base rule; setup adds colour modifiers */
-.status {
-    margin-top: 14px;
+.signal {
+    font-size: 0.78rem;
+    color: var(--clr-muted);
+    flex-shrink: 0;
 }
 
-.status.error {
-    color: var(--clr-danger);
+.wifi-form {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
-.status.ok {
-    color: var(--clr-success);
+.pass-wrap {
+    position: relative;
+    margin-bottom: 14px;
 }
 
-/* ── Skip / direct access ────────────────────────────────────────────────────*/
-.skip-wrap {
+.pass-wrap .field-input {
+    padding-right: 44px;
+    margin-bottom: 0;
+}
+
+.toggle-pass {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--clr-muted);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0;
+    /* Fixed box prevents glyph-width variance from shifting surrounding layout */
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid var(--clr-border);
+    overflow: hidden;
+    flex-shrink: 0;
 }
 
-.skip-label {
-    font-size: 0.75rem;
+.toggle-pass:hover {
     color: var(--clr-text);
 }
 
-.skip-link {
+/* Skip link */
+.skip-btn {
+    font-size: 0.78rem;
+    padding: 8px 14px;
+}
+
+/* ── Palette / swatch row ────────────────────────────────────────────────────*/
+.palette-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.swatch {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--sw);
+    border: 3px solid transparent;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.swatch:hover {
+    transform: scale(1.1);
+}
+
+.swatch.selected {
+    border-color: var(--clr-text);
+}
+
+.custom-swatch {
+    background: var(--clr-surface);
+    border: 2px dashed var(--clr-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--clr-muted);
+    font-size: 1.1rem;
+    overflow: hidden;
+}
+
+.custom-swatch input[type="color"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    border: none;
+    padding: 0;
+}
+
+/* ── Range inputs ────────────────────────────────────────────────────────────*/
+.range-input {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--clr-border);
+    outline: none;
+    margin: 8px 0 4px;
+    cursor: pointer;
+}
+
+.range-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--clr-accent);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.range-input::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--clr-accent);
+    border: none;
+    cursor: pointer;
+}
+
+.range-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.68rem;
+    color: var(--clr-muted);
+    margin-bottom: 4px;
+}
+
+.badge-val {
+    font-size: 0.75rem;
+    font-weight: 700;
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--clr-accent);
+    padding: 2px 8px;
+    border-radius: 20px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+/* ── Notice banner ───────────────────────────────────────────────────────────*/
+.periph-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: rgba(59, 130, 246, 0.07);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 0.78rem;
+    color: var(--clr-text);
+    line-height: 1.5;
+    margin-bottom: 16px;
+}
+
+.periph-notice.warn {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.25);
+}
+
+.notice-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+    line-height: 1.3;
+}
+
+/* ── Peripheral list ─────────────────────────────────────────────────────────*/
+.periph-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0;
+}
+
+.periph-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--clr-bg);
+    border: 1px solid var(--clr-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.85rem;
+}
+
+.periph-item.skeleton {
+    color: var(--clr-muted);
+    justify-content: flex-start;
+}
+
+.periph-name {
+    font-weight: 600;
+    flex: 1;
+}
+
+.periph-meta {
+    font-size: 0.72rem;
+    color: var(--clr-muted);
+}
+
+.periph-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 20px;
+    flex-shrink: 0;
+}
+
+.periph-badge.enabled {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--clr-success);
+}
+
+.periph-badge.disabled {
+    background: rgba(74, 79, 106, 0.2);
+    color: var(--clr-muted);
+}
+
+/* ── Docs / completion list ──────────────────────────────────────────────────*/
+.docs-list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.docs-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--clr-border);
+}
+
+.docs-item:last-child {
+    border-bottom: none;
+}
+
+.docs-icon {
+    font-size: 1.3rem;
+    flex-shrink: 0;
+    line-height: 1.3;
+    margin-top: 2px;
+}
+
+.docs-title {
+    font-size: 0.88rem;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 3px;
+    color: var(--clr-text);
+}
+
+.docs-desc {
+    font-size: 0.75rem;
+    color: var(--clr-muted);
+    line-height: 1.5;
+    margin: 0 0 4px;
+}
+
+.inline-link {
     font-size: 0.75rem;
     color: var(--clr-accent);
     text-decoration: none;
     font-weight: 600;
 }
 
-.skip-link:hover {
+.inline-link:hover {
     text-decoration: underline;
 }
 
-/* ── Hint ────────────────────────────────────────────────────────────────────*/
-.hint {
+/* ── Drive slide — test joystick ─────────────────────────────────────────────*/
+.test-joystick-wrap {
     margin-top: 22px;
     padding-top: 18px;
     border-top: 1px solid var(--clr-border);
-    font-size: 0.72rem;
-    color: var(--clr-text);
-    text-align: center;
-    line-height: 1.7;
 }
 
-.hint strong {
+.test-motor-bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.test-track-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--clr-surface);
+    border: 1px solid var(--clr-border);
+    border-radius: var(--radius-sm);
+    transition: border-color 0.2s;
+}
+
+.test-track-card[data-state="running"] {
+    border-color: var(--clr-success);
+}
+
+.test-track-card[data-state="reverse"] {
+    border-color: var(--clr-accent);
+}
+
+.test-track-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--clr-muted);
+}
+
+.test-bar-track {
+    height: 5px;
+    background: var(--clr-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.test-bar {
+    height: 100%;
+    width: 0%;
+    border-radius: 3px;
+    background: var(--clr-muted);
+    transition: width 0.06s linear, background 0.15s;
+}
+
+.test-joy-row {
+    display: flex;
+    justify-content: center;
+}
+
+.test-joy-zone {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    background: var(--clr-surface);
+    border: 2px solid var(--clr-border);
+    box-shadow: inset 0 2px 14px rgba(0, 0, 0, 0.45);
+    touch-action: none;
+    cursor: grab;
+    user-select: none;
+}
+
+.test-joy-zone:active {
+    cursor: grabbing;
+}
+
+.test-joy-zone::before,
+.test-joy-zone::after {
+    content: '';
+    position: absolute;
+    background: var(--clr-border);
+    pointer-events: none;
+}
+
+.test-joy-zone::before {
+    width: 1px;
+    height: 60%;
+    top: 20%;
+    left: calc(50% - 0.5px);
+}
+
+.test-joy-zone::after {
+    width: 60%;
+    height: 1px;
+    left: 20%;
+    top: calc(50% - 0.5px);
+}
+
+.test-joy-knob {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--clr-accent);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: background 0.2s;
+}
+
+.key-hint {
+    font-size: 0.7rem;
+    color: var(--clr-muted);
+}
+
+/* ── Swipe hint (shown once, then fades) ─────────────────────────────────────*/
+.swipe-hint {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(30, 34, 46, 0.9);
     color: var(--clr-text);
+    font-size: 0.75rem;
+    padding: 6px 16px;
+    border-radius: 20px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.4s;
+    white-space: nowrap;
+    z-index: 10;
+}
+
+.swipe-hint.visible {
+    opacity: 1;
 }

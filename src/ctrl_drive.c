@@ -16,8 +16,8 @@
  *
  * Command watchdog
  * ────────────────
- * ctrl_drive_feed_watchdog() must be called each time a valid command is
- * received from the WebSocket handler. ctrl_drive_tick() checks elapsed
+ * ctrl_drive_feed_watchdog() must be called each time a valid drive command
+ * is received from the WebSocket handler. ctrl_drive_tick() checks elapsed
  * time; if no command arrives within settings_get()->drive_watchdog_ms the
  * controller disarms itself and calls ctrl_drive_emergency_stop().
  *
@@ -44,8 +44,9 @@
  * ────────────────────
  * drive_deadband    — read in ctrl_drive_set_axes() on every WS frame.
  * drive_ramp_rate   — read in ramp() on every ctrl_drive_tick() call.
+ * drive_max_duty    — read in ctrl_drive_tick() before output clamp.
  * drive_watchdog_ms — read in ctrl_drive_tick() watchdog check.
- * All three are const* reads with no locking needed (settings_get() is
+ * All four are const* reads with no locking needed (settings_get() is
  * safe for concurrent readers; saves are mutex-protected inside settings_mgr).
  */
 
@@ -113,10 +114,11 @@ void ctrl_drive_init(void)
 {
     o_motors_init();
     s_last_cmd_ms = now_ms();
-    ESP_LOGI(TAG, "ctrl_drive_init OK (watchdog=%lu ms, deadband=%.3f, ramp=%.3f)",
+    ESP_LOGI(TAG, "ctrl_drive_init OK (watchdog=%lu ms, deadband=%.3f, ramp=%.3f, max_duty=%.3f)",
              (unsigned long)settings_get()->drive_watchdog_ms,
              settings_get()->drive_deadband,
-             settings_get()->drive_ramp_rate);
+             settings_get()->drive_ramp_rate,
+             settings_get()->drive_max_duty);
 }
 
 /**
@@ -164,14 +166,17 @@ bool ctrl_drive_is_armed(void)
 {
     return s_armed;
 }
-    static int log_divider = 0;
+
 void ctrl_drive_tick(void)
 {
+    static int log_divider = 0;
+
     ESP_LOGD(TAG, "Target X FP: %d", s_target_x_fp);
     ESP_LOGD(TAG, "Target Y FP: %d", s_target_y_fp);
+
     /* ── Watchdog check ──────────────────────────────────────────────────── */
     if (s_armed && s_watchdog_ok) {
-        uint32_t elapsed    = now_ms() - s_last_cmd_ms;
+        uint32_t elapsed     = now_ms() - s_last_cmd_ms;
         uint32_t watchdog_ms = settings_get()->drive_watchdog_ms;
         if (elapsed > watchdog_ms) {
             ESP_LOGW(TAG, "Command watchdog expired (%lu ms > %lu ms) — disarming",
@@ -203,8 +208,15 @@ void ctrl_drive_tick(void)
     float want_left  = clampf(y + x, -1.0f, 1.0f);
     float want_right = clampf(y - x, -1.0f, 1.0f);
 
+    /* Apply drive_max_duty: read from settings so it takes effect immediately
+     * when changed via the setup wizard or /api/settings, same pattern as
+     * drive_ramp_rate in ramp(). No locking needed — see thread-safety note. */
+    float max_duty   = settings_get()->drive_max_duty;
+    want_left        = clampf(want_left,  -max_duty, max_duty);
+    want_right       = clampf(want_right, -max_duty, max_duty);
+
     /* Advance ramp */
-    if (log_divider++ % 10 == 0) { // Log once per second
+    if (log_divider++ % 10 == 0) {
         ESP_LOGD(TAG, "System is %s", s_armed ? "ARMED" : "DISARMED");
         ESP_LOGI(TAG, "Want L: %f", want_left);
         ESP_LOGI(TAG, "Want R: %f", want_right);

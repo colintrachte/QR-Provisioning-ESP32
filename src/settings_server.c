@@ -94,6 +94,9 @@ static cJSON *settings_to_json(const robot_settings_t *s)
         if (pal) cJSON_AddItemToObject(obj, "palette", pal);
     }
 
+    cJSON_AddNumberToObject(obj, "drive_max_duty", (double)s->drive_max_duty);
+    cJSON_AddNumberToObject(obj, "drive_expo",     (double)s->drive_expo);
+
     return obj;
 }
 
@@ -205,6 +208,9 @@ static bool apply_json_to_settings(const cJSON *src, robot_settings_t *dst)
             }
         }
     }
+
+    APPLY_NUM("drive_max_duty", drive_max_duty, float);
+    APPLY_NUM("drive_expo",     drive_expo,     float);
 
 #undef APPLY_STR
 #undef APPLY_NUM

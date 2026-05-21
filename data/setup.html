@@ -3,9 +3,9 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0f1117">
-    <title>WiFi Setup</title>
+    <title>Device Setup</title>
     <link rel="preload" href="/base.css" as="style">
     <link rel="preload" href="/setup.css" as="style">
     <link rel="stylesheet" href="/base.css">
@@ -13,48 +13,278 @@
 </head>
 
 <body>
-    <div class="card">
-        <div class="logo">&#128246;</div>
-        <h1>WiFi Setup</h1>
-        <p class="subtitle">Connect this device to your network</p>
 
-        <p class="section-label">
-            Available networks
-            <button class="rescan-btn" id="btn-rescan">&#8635; Rescan</button>
-        </p>
+    <div class="wizard" id="wizard" aria-label="Setup wizard">
 
-        <!-- Spinner: shown while scanning -->
-        <p id="spinner" class="scan-status" style="display:none">Scanning&hellip;</p>
+        <!-- ── Progress dots ─────────────────────────────────────────────── -->
+        <div class="wizard-dots" id="wizard-dots" role="tablist" aria-label="Setup steps"></div>
 
-        <div id="network-list">
-            <p class="scan-status">Scanning&hellip;</p>
-        </div>
+        <!-- ── Slide track ───────────────────────────────────────────────── -->
+        <div class="slide-track" id="slide-track">
 
-        <form id="connect-form">
-            <label for="ssid">Network name</label>
-            <input type="text" id="ssid" name="ssid" placeholder="Or type manually" autocomplete="off" autocorrect="off"
-                autocapitalize="none" spellcheck="false" required>
+            <!-- ══════════════════════════════════════════════════════════
+                 SLIDE 0 — WiFi
+            ══════════════════════════════════════════════════════════════ -->
+            <div class="slide" id="slide-0" data-slide="0">
+                <div class="slide-header">
+                    <div class="slide-icon">&#128246;</div>
+                    <h2 class="slide-title">WiFi Network</h2>
+                    <p class="slide-sub">Required — the device connects to your network to receive commands.</p>
+                </div>
 
-            <label for="password">Password</label>
-            <div class="pass-wrap">
-                <input type="password" id="password" name="password" placeholder="Leave blank if open network"
-                    autocomplete="current-password">
-                <button type="button" class="toggle-pass" aria-label="Show/hide password">&#128065;</button>
+                <div class="slide-body">
+                    <div class="net-header">
+                        <span class="section-label">Available networks</span>
+                        <button class="rescan-btn" id="btn-rescan">&#8635; Rescan</button>
+                    </div>
+
+                    <p id="spinner" class="scan-status hidden">Scanning&hellip;</p>
+
+                    <div id="network-list" class="net-list">
+                        <p class="scan-status">Scanning&hellip;</p>
+                    </div>
+
+                    <div class="wifi-form" id="wifi-form">
+                        <label class="field-label" for="ssid">Network name</label>
+                        <input type="text" class="field-input" id="ssid" name="ssid" placeholder="Or type manually"
+                            autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
+
+                        <label class="field-label" for="password">Password</label>
+                        <div class="pass-wrap">
+                            <input type="password" class="field-input" id="password" name="password"
+                                placeholder="Leave blank if open">
+                            <button type="button" class="toggle-pass" aria-label="Show/hide password">&#128065;</button>
+                        </div>
+
+                        <button type="button" class="btn btn-primary" id="btn-connect">Save &amp; Connect</button>
+                        <p class="status" id="wifi-status"></p>
+                    </div>
+                </div>
+
+                <div class="slide-footer">
+                    <button class="btn btn-ghost skip-btn" data-skip="0">Skip for now</button>
+                    <button class="btn btn-next" data-next="0">Next &#8594;</button>
+                </div>
             </div>
 
-            <button type="submit" id="btn-connect">Save &amp; Connect</button>
-            <p class="status" id="status"></p>
-        </form>
+            <!-- ══════════════════════════════════════════════════════════
+                 SLIDE 1 — Personalization
+            ══════════════════════════════════════════════════════════════ -->
+            <div class="slide" id="slide-1" data-slide="1">
+                <div class="slide-header">
+                    <div class="slide-icon">&#127912;</div>
+                    <h2 class="slide-title">Personalization</h2>
+                    <p class="slide-sub">Name your device and pick a theme color.</p>
+                </div>
 
-        <div class="skip-wrap">
-            <a id="skip-btn" class="skip-link" href="/index.html">Skip this. Take me to Robot Control &rarr;</a>
-        </div>
+                <div class="slide-body">
+                    <label class="field-label" for="device-name-input">Device name</label>
+                    <input type="text" class="field-input" id="device-name-input" maxlength="31" placeholder="Robot"
+                        autocomplete="off" spellcheck="false">
+                    <p class="field-hint">Shown in the header and on any status display.</p>
 
-        <p class="hint">
-            After saving, the device will reboot and join your network.<br>
-            To reconfigure: hold BOOT 3&nbsp;s at power-up.
-        </p>
-    </div>
+                    <label class="field-label" style="margin-top:20px">Accent color</label>
+                    <div class="palette-row" id="palette-row">
+                        <button class="swatch selected" data-color="#3b82f6" style="--sw:#3b82f6" title="Blue"></button>
+                        <button class="swatch" data-color="#22c55e" style="--sw:#22c55e" title="Green"></button>
+                        <button class="swatch" data-color="#f59e0b" style="--sw:#f59e0b" title="Amber"></button>
+                        <button class="swatch" data-color="#ef4444" style="--sw:#ef4444" title="Red"></button>
+                        <button class="swatch" data-color="#a855f7" style="--sw:#a855f7" title="Purple"></button>
+                        <button class="swatch" data-color="#06b6d4" style="--sw:#06b6d4" title="Cyan"></button>
+                        <button class="swatch" data-color="#f97316" style="--sw:#f97316" title="Orange"></button>
+                        <button class="swatch custom-swatch" id="swatch-custom" title="Custom color">
+                            <input type="color" id="color-picker" tabindex="-1" aria-label="Custom color">
+                            <span>&#43;</span>
+                        </button>
+                    </div>
+                    <p class="field-hint">Applied to buttons, selections, and highlights across the UI.</p>
+
+                    <div class="field-actions" style="margin-top:24px">
+                        <button class="btn btn-primary" id="btn-save-persona">Save Personalization</button>
+                        <p class="status" id="persona-status"></p>
+                    </div>
+                </div>
+
+                <div class="slide-footer">
+                    <button class="btn btn-ghost" data-prev="1">&#8592; Back</button>
+                    <button class="btn btn-next" data-next="1">Next &#8594;</button>
+                </div>
+            </div>
+
+            <!-- ══════════════════════════════════════════════════════════
+                 SLIDE 2 — Peripherals
+            ══════════════════════════════════════════════════════════════ -->
+            <div class="slide" id="slide-2" data-slide="2">
+                <div class="slide-header">
+                    <div class="slide-icon">&#128268;</div>
+                    <h2 class="slide-title">Peripherals</h2>
+                    <p class="slide-sub">Review hardware attached to this device. Enable what you need.</p>
+                </div>
+
+                <div class="slide-body">
+                    <div class="periph-notice">
+                        <span class="notice-icon">&#9432;</span>
+                        <span>These settings match what the firmware was compiled with. Changes take effect after
+                            reboot.</span>
+                    </div>
+
+                    <ul class="periph-list" id="periph-list">
+                        <!-- Populated by JS. Falls back to static list if API unavailable. -->
+                        <li class="periph-item skeleton">Loading&hellip;</li>
+                    </ul>
+
+                    <p class="field-hint" style="margin-top:12px">
+                        Full peripheral management is available in
+                        <a href="/settings#peripherals" class="inline-link">Settings &#8594; Peripherals</a>.
+                    </p>
+                </div>
+
+                <div class="slide-footer">
+                    <button class="btn btn-ghost" data-prev="2">&#8592; Back</button>
+                    <button class="btn btn-next" data-next="2">Next &#8594;</button>
+                </div>
+            </div>
+
+            <!-- ══════════════════════════════════════════════════════════
+                 SLIDE 3 — Drive Configuration
+            ══════════════════════════════════════════════════════════════ -->
+            <div class="slide" id="slide-3" data-slide="3">
+                <div class="slide-header">
+                    <div class="slide-icon">&#127945;</div>
+                    <h2 class="slide-title">Drive Settings</h2>
+                    <p class="slide-sub">Critical — these values control how fast and responsively your robot moves.</p>
+                </div>
+
+                <div class="slide-body">
+                    <div class="periph-notice warn">
+                        <span class="notice-icon">&#9888;</span>
+                        <span>Set a conservative max speed until you've tested in an open area.</span>
+                    </div>
+
+                    <label class="field-label" for="max-speed">Max motor duty <span class="badge-val"
+                            id="max-speed-val">60%</span></label>
+                    <input type="range" class="range-input" id="max-speed" min="10" max="100" step="5" value="60">
+                    <div class="range-labels"><span>10%</span><span>100%</span></div>
+
+                    <label class="field-label" style="margin-top:20px" for="expo-val">Expo curve <span class="badge-val"
+                            id="expo-disp">35%</span></label>
+                    <input type="range" class="range-input" id="expo-val" min="0" max="70" step="5" value="35">
+                    <div class="range-labels"><span>Linear</span><span>Strong expo</span></div>
+                    <p class="field-hint">Higher expo gives finer control at low stick deflection.</p>
+
+                    <label class="field-label" style="margin-top:20px" for="deadzone-val">Stick deadzone <span
+                            class="badge-val" id="dz-disp">6%</span></label>
+                    <input type="range" class="range-input" id="deadzone-val" min="0" max="20" step="1" value="6">
+                    <div class="range-labels"><span>0%</span><span>20%</span></div>
+
+                    <!-- ── Test joystick ──────────────────────────────────── -->
+                    <div class="test-joystick-wrap">
+                        <p class="section-label" style="margin-bottom:10px">Live preview</p>
+
+                        <div class="test-motor-bars">
+                            <div class="test-track-card" id="test-card-left">
+                                <span class="test-track-label">Left</span>
+                                <div class="test-bar-track">
+                                    <div class="test-bar" id="test-bar-left"></div>
+                                </div>
+                            </div>
+                            <div class="test-track-card" id="test-card-right">
+                                <span class="test-track-label">Right</span>
+                                <div class="test-bar-track">
+                                    <div class="test-bar" id="test-bar-right"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="test-joy-row">
+                            <div id="test-joy-zone" class="test-joy-zone" touch-action="none">
+                                <div id="test-joy-knob" class="test-joy-knob"></div>
+                            </div>
+                        </div>
+                        <p class="key-hint" style="text-align:center;margin-top:6px">Drag to preview response curve</p>
+                    </div>
+
+                    <div class="field-actions" style="margin-top:16px">
+                        <button class="btn btn-primary" id="btn-save-drive">Save Drive Settings</button>
+                        <p class="status" id="drive-status"></p>
+                    </div>
+                </div>
+
+                <div class="slide-footer">
+                    <button class="btn btn-ghost" data-prev="3">&#8592; Back</button>
+                    <button class="btn btn-next" data-next="3">Next &#8594;</button>
+                </div>
+            </div>
+
+            <!-- ══════════════════════════════════════════════════════════
+                 SLIDE 4 — All Done
+            ══════════════════════════════════════════════════════════════ -->
+            <div class="slide" id="slide-4" data-slide="4">
+                <div class="slide-header">
+                    <div class="slide-icon">&#10003;</div>
+                    <h2 class="slide-title">Setup Complete</h2>
+                    <p class="slide-sub">Your device is configured. Here are some things to keep handy.</p>
+                </div>
+
+                <div class="slide-body">
+
+                    <ul class="docs-list">
+                        <li class="docs-item">
+                            <span class="docs-icon">&#128196;</span>
+                            <div>
+                                <strong class="docs-title">API reference</strong>
+                                <p class="docs-desc">REST endpoints, WebSocket protocol, and message format for custom
+                                    integrations.</p>
+                                <a class="inline-link" href="/api/info" target="_blank">View on device &#8599;</a>
+                            </div>
+                        </li>
+                        <li class="docs-item">
+                            <span class="docs-icon">&#9881;</span>
+                            <div>
+                                <strong class="docs-title">Settings</strong>
+                                <p class="docs-desc">OTA firmware updates, full peripheral config, security tokens,
+                                    telemetry intervals.</p>
+                                <a class="inline-link" href="/settings">Open Settings &#8594;</a>
+                            </div>
+                        </li>
+                        <li class="docs-item">
+                            <span class="docs-icon">&#128268;</span>
+                            <div>
+                                <strong class="docs-title">Re-run WiFi setup</strong>
+                                <p class="docs-desc">Hold BOOT for 3 s at power-up to re-enter captive portal mode.</p>
+                            </div>
+                        </li>
+                        <li class="docs-item">
+                            <span class="docs-icon">&#128275;</span>
+                            <div>
+                                <strong class="docs-title">OTA auth token</strong>
+                                <p class="docs-desc">Set a token in Settings &#8594; Security to protect firmware
+                                    uploads on shared networks.</p>
+                                <a class="inline-link" href="/settings#security">Configure &#8594;</a>
+                            </div>
+                        </li>
+                        <li class="docs-item">
+                            <span class="docs-icon">&#128200;</span>
+                            <div>
+                                <strong class="docs-title">Diagnostics</strong>
+                                <p class="docs-desc">Uptime, heap, RSSI, and latency are shown live in the control page
+                                    diagnostics drawer.</p>
+                            </div>
+                        </li>
+                    </ul>
+
+                </div>
+
+                <div class="slide-footer finish-footer">
+                    <button class="btn btn-ghost" data-prev="4">&#8592; Back</button>
+                    <a class="btn btn-primary finish-btn" href="/index.html">Go to Robot Control &#8594;</a>
+                </div>
+            </div>
+
+        </div><!-- /slide-track -->
+
+    </div><!-- /wizard -->
+
     <script src="/setup.js" defer></script>
 </body>
 

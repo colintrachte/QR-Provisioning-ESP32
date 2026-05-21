@@ -153,6 +153,16 @@ static void apply_defaults(robot_settings_t *s)
 #else
     s->display_sleep_timeout_s = 0;   /* never sleep */
 #endif
+
+    /* Drive max duty */
+#ifdef DRIVE_MAX_DUTY
+    s->drive_max_duty = DRIVE_MAX_DUTY;
+#else
+    s->drive_max_duty = 0.80f;
+#endif
+
+    /* Joystick expo curve — UI preference, persisted so the wizard remembers it */
+    s->drive_expo = 0.35f;
 }
 
 /* ── Validation ─────────────────────────────────────────────────────────────*/
@@ -233,6 +243,19 @@ esp_err_t settings_validate(const robot_settings_t *s,
     if (s->display_sleep_timeout_s > 3600)
         FAIL("display_sleep_timeout_s out of range [0, 3600]");
 
+    /* Drive max duty */
+    if (s->drive_max_duty < 0.10f || s->drive_max_duty > 1.0f)
+        FAIL("drive_max_duty out of range [0.10, 1.0]");
+    if (isnan(s->drive_max_duty) || isinf(s->drive_max_duty))
+        FAIL("drive_max_duty is NaN or Inf");
+
+    /* Expo curve */
+    if (s->drive_expo < 0.0f || s->drive_expo > 0.70f)
+        FAIL("drive_expo out of range [0.0, 0.70]");
+    if (isnan(s->drive_expo) || isinf(s->drive_expo))
+        FAIL("drive_expo is NaN or Inf");
+
+
 #undef FAIL
     return ESP_OK;
 }
@@ -265,6 +288,9 @@ static char *serialise(const robot_settings_t *s)
         cJSON *pal = cJSON_Parse(s->palette);
         if (pal) cJSON_AddItemToObject(obj, "palette", pal);
     }
+
+    cJSON_AddNumberToObject(obj, "drive_max_duty", (double)s->drive_max_duty);
+    cJSON_AddNumberToObject(obj, "drive_expo",     (double)s->drive_expo);
 
     char *out = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
@@ -338,6 +364,9 @@ static void deserialise(const char *json_str, robot_settings_t *dst)
             }
         }
     }
+
+    NUM_FIELD("drive_max_duty", drive_max_duty, float);
+    NUM_FIELD("drive_expo",     drive_expo,     float);
 
 #undef STR_FIELD
 #undef NUM_FIELD
@@ -432,6 +461,8 @@ esp_err_t settings_load(void)
              s_settings.mdns_enable ? "on" : "off", s_settings.mdns_hostname);
     ESP_LOGI(TAG, "  drive_deadband:      %.3f", s_settings.drive_deadband);
     ESP_LOGI(TAG, "  drive_ramp_rate:     %.3f", s_settings.drive_ramp_rate);
+    ESP_LOGI(TAG, "  drive_max_duty:      %.3f", s_settings.drive_max_duty);
+    ESP_LOGI(TAG, "  drive_expo:          %.3f", s_settings.drive_expo);
     ESP_LOGI(TAG, "  drive_watchdog_ms:   %lu",  (unsigned long)s_settings.drive_watchdog_ms);
     ESP_LOGI(TAG, "  telemetry_ms:        %lu",  (unsigned long)s_settings.telemetry_interval_ms);
     ESP_LOGI(TAG, "  rssi_warn_dbm:       %d",   s_settings.rssi_warn_dbm);

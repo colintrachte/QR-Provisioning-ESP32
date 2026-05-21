@@ -83,6 +83,8 @@ typedef struct {
     float   drive_deadband;           /* 0.0–0.5, default 0.05               */
     float   drive_ramp_rate;          /* max Δ per 10 ms tick, default 0.05  */
     uint32_t drive_watchdog_ms;       /* command timeout, default 500        */
+    float   drive_max_duty;           /* peak motor duty cycle [0.10, 1.0]; default 0.80 */
+    float   drive_expo;               /* joystick expo curve [0.0, 0.70]; 0 = linear     */
 
     /* Telemetry / health */
     uint32_t telemetry_interval_ms;  /* push period, default 200 (5 Hz)     */
